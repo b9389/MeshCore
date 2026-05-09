@@ -55,7 +55,7 @@ static void renderDisplay(const char* detail_line = nullptr) {
   display.startFrame();
 
   display.setCursor(0, 0);
-  display.print("MeshLink KISS");
+  display.print("Cinder KISS");
 
   display.setCursor(0, 10);
   display.print(board.getManufacturerName());

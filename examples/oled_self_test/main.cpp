@@ -20,7 +20,7 @@ static void renderPage() {
   switch (current_page) {
     case 0:
       display.setCursor(0, 0);
-      display.print("MeshLink OLED");
+      display.print("Cinder OLED");
       display.setCursor(0, 10);
       display.print("Heltec V3 test");
       display.setCursor(0, 24);
