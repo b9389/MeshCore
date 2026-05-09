@@ -2,6 +2,8 @@
 #include <Adafruit_GrayOLED.h>
 #include "Adafruit_SH110X.h"
 
+static constexpr uint32_t OLED_POWER_SETTLE_MS = 60;
+
 bool SH1106Display::i2c_probe(TwoWire &wire, uint8_t addr)
 {
   wire.beginTransmission(addr);
@@ -11,7 +13,10 @@ bool SH1106Display::i2c_probe(TwoWire &wire, uint8_t addr)
 
 bool SH1106Display::begin()
 {
-  return display.begin(DISPLAY_ADDRESS, true) && i2c_probe(Wire, DISPLAY_ADDRESS);
+  delay(OLED_POWER_SETTLE_MS);
+  bool ok = display.begin(DISPLAY_ADDRESS, true);
+  _isOn = ok;
+  return ok;
 }
 
 void SH1106Display::turnOn()

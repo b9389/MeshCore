@@ -24,6 +24,83 @@ KissModem* modem;
 static uint32_t next_noise_floor_calib_ms = 0;
 static uint32_t next_agc_reset_ms = 0;
 
+#ifdef DISPLAY_CLASS
+static bool display_ready = false;
+static bool has_last_rx_meta = false;
+static int8_t last_rx_snr_quarter_db = 0;
+static int8_t last_rx_rssi_dbm = 0;
+static uint32_t last_display_update_ms = 0;
+static char short_identity[9] = "--------";
+
+static void formatShortIdentity() {
+  static const char HEX_DIGITS[] = "0123456789abcdef";
+  for (int i = 0; i < 4; i++) {
+    short_identity[i * 2] = HEX_DIGITS[(identity.pub_key[i] >> 4) & 0x0F];
+    short_identity[i * 2 + 1] = HEX_DIGITS[identity.pub_key[i] & 0x0F];
+  }
+  short_identity[8] = 0;
+}
+
+static const char* getModemState() {
+  if (modem == nullptr) return "BOOT";
+  if (modem->isActuallyTransmitting()) return "TX";
+  if (modem->isTxBusy()) return "BUSY";
+  return "IDLE";
+}
+
+static void renderDisplay(const char* detail_line = nullptr) {
+  if (!display_ready) return;
+
+  char line[32];
+  display.startFrame();
+
+  display.setCursor(0, 0);
+  display.print("MeshLink KISS");
+
+  display.setCursor(0, 10);
+  display.print(board.getManufacturerName());
+
+  display.setCursor(0, 20);
+  snprintf(line, sizeof(line), "ID %s", short_identity);
+  display.print(line);
+
+  display.setCursor(0, 30);
+  snprintf(
+      line,
+      sizeof(line),
+      "RX %lu TX %lu ER %lu",
+      (unsigned long)radio_driver.getPacketsRecv(),
+      (unsigned long)radio_driver.getPacketsSent(),
+      (unsigned long)radio_driver.getPacketsRecvErrors());
+  display.print(line);
+
+  display.setCursor(0, 40);
+  if (detail_line != nullptr) {
+    display.print(detail_line);
+  } else if (has_last_rx_meta) {
+    int snr_q = last_rx_snr_quarter_db;
+    int snr_abs_q = snr_q < 0 ? -snr_q : snr_q;
+    snprintf(
+        line,
+        sizeof(line),
+        "SNR %s%d.%02u R %d",
+        snr_q < 0 ? "-" : "",
+        snr_abs_q / 4,
+        (unsigned int)(snr_abs_q % 4) * 25U,
+        last_rx_rssi_dbm);
+    display.print(line);
+  } else {
+    display.print("SNR -- R --");
+  }
+
+  display.setCursor(0, 50);
+  snprintf(line, sizeof(line), "STATE %s", getModemState());
+  display.print(line);
+
+  display.endFrame();
+}
+#endif
+
 void halt() {
   while (1) ;
 }
@@ -73,7 +150,17 @@ void onGetStats(uint32_t* rx, uint32_t* tx, uint32_t* errors) {
 void setup() {
   board.begin();
 
+#ifdef DISPLAY_CLASS
+  display_ready = display.begin();
+  if (display_ready) {
+    renderDisplay("Booting...");
+  }
+#endif
+
   if (!radio_init()) {
+#ifdef DISPLAY_CLASS
+    renderDisplay("Radio init failed");
+#endif
     halt();
   }
 
@@ -81,6 +168,10 @@ void setup() {
 
   rng.begin(radio_get_rng_seed());
   loadOrCreateIdentity();
+
+#ifdef DISPLAY_CLASS
+  formatShortIdentity();
+#endif
 
   sensors.begin();
 
@@ -116,6 +207,11 @@ void setup() {
   modem->setGetCurrentRssiCallback(onGetCurrentRssi);
   modem->setGetStatsCallback(onGetStats);
   modem->begin();
+
+#ifdef DISPLAY_CLASS
+  renderDisplay();
+  last_display_update_ms = millis();
+#endif
 }
 
 void loop() {
@@ -134,6 +230,11 @@ void loop() {
     if (rx_len > 0) {
       int8_t snr = (int8_t)(radio_driver.getLastSNR() * 4);
       int8_t rssi = (int8_t)radio_driver.getLastRSSI();
+#ifdef DISPLAY_CLASS
+      has_last_rx_meta = true;
+      last_rx_snr_quarter_db = snr;
+      last_rx_rssi_dbm = rssi;
+#endif
       modem->onPacketReceived(snr, rssi, rx_buf, rx_len);
     }
   }
@@ -143,4 +244,11 @@ void loop() {
     next_noise_floor_calib_ms = millis();
   }
   radio_driver.loop();
+
+#ifdef DISPLAY_CLASS
+  if ((uint32_t)(millis() - last_display_update_ms) >= 750) {
+    renderDisplay();
+    last_display_update_ms = millis();
+  }
+#endif
 }

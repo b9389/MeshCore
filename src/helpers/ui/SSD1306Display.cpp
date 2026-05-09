@@ -1,5 +1,7 @@
 #include "SSD1306Display.h"
 
+static constexpr uint32_t OLED_POWER_SETTLE_MS = 60;
+
 bool SSD1306Display::i2c_probe(TwoWire& wire, uint8_t addr) {
   wire.beginTransmission(addr);
   uint8_t error = wire.endTransmission();
@@ -10,17 +12,24 @@ bool SSD1306Display::begin() {
   if (!_isOn) {
     if (_peripher_power) _peripher_power->claim();
     _isOn = true;
+    delay(OLED_POWER_SETTLE_MS);
   }
   #ifdef DISPLAY_ROTATION
   display.setRotation(DISPLAY_ROTATION);
   #endif
-  return display.begin(SSD1306_SWITCHCAPVCC, DISPLAY_ADDRESS, true, false) && i2c_probe(Wire, DISPLAY_ADDRESS);
+  bool ok = display.begin(SSD1306_SWITCHCAPVCC, DISPLAY_ADDRESS, true, false);
+  if (!ok && _isOn) {
+    if (_peripher_power) _peripher_power->release();
+    _isOn = false;
+  }
+  return ok;
 }
 
 void SSD1306Display::turnOn() {
   if (!_isOn) {
     if (_peripher_power) _peripher_power->claim();
     _isOn = true;  // set before begin() to prevent double claim
+    delay(OLED_POWER_SETTLE_MS);
     if (_peripher_power) begin();  // re-init display after power was cut
   }
   display.ssd1306_command(SSD1306_DISPLAYON);

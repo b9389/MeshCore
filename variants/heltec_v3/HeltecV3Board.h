@@ -26,7 +26,8 @@ private:
 public:
   RefCountedDigitalPin periph_power;
 
-  HeltecV3Board() : periph_power(PIN_VEXT_EN) { }
+  // Heltec V3 drives the shared Vext rail low to power the OLED and peripherals.
+  HeltecV3Board() : periph_power(PIN_VEXT_EN, PIN_VEXT_EN_ACTIVE) { }
 
   void begin() {
     ESP32Board::begin();
