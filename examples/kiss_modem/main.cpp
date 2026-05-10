@@ -94,7 +94,17 @@ static void renderDisplay(const char* detail_line = nullptr) {
   }
 
   display.setCursor(0, 50);
-  snprintf(line, sizeof(line), "STATE %s", getModemState());
+  if (modem != nullptr && modem->getOverrideFlags() != 0) {
+    snprintf(
+        line,
+        sizeof(line),
+        "OVR %s Q%u X%u",
+        modem->getEffectiveRoleLabel(),
+        modem->isQuietMode() ? 1U : 0U,
+        modem->isTxInhibited() ? 1U : 0U);
+  } else {
+    snprintf(line, sizeof(line), "STATE %s", getModemState());
+  }
   display.print(line);
 
   display.endFrame();

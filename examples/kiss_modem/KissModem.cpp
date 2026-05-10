@@ -22,6 +22,10 @@ KissModem::KissModem(Stream& serial, mesh::LocalIdentity& identity, mesh::RNG& r
   _getStatsCallback = nullptr;
   _config = {0, 0, 0, 0, 0};
   _signal_report_enabled = true;
+  _last_override_reason = 0;
+  for (uint8_t i = 0; i < KISS_MAX_OVERRIDES; i++) {
+    _overrides[i] = {false, 0, 0, 0};
+  }
 }
 
 void KissModem::begin() {
@@ -30,6 +34,7 @@ void KissModem::begin() {
   _rx_active = false;
   _has_pending_tx = false;
   _tx_state = TX_IDLE;
+  purgeExpiredOverrides();
 }
 
 void KissModem::writeByte(uint8_t b) {
@@ -68,6 +73,8 @@ void KissModem::writeHardwareError(uint8_t error_code) {
 }
 
 void KissModem::loop() {
+  purgeExpiredOverrides();
+
   while (_serial.available()) {
     uint8_t b = _serial.read();
 
@@ -125,6 +132,11 @@ void KissModem::processFrame() {
 
   switch (cmd) {
     case KISS_CMD_DATA:
+      purgeExpiredOverrides();
+      if (isOverrideActive(OVERRIDE_KIND_TX_INHIBIT)) {
+        writeHardwareError(HW_ERR_TX_INHIBITED);
+        break;
+      }
       if (data_len > 0 && data_len <= KISS_MAX_PACKET_SIZE && !_has_pending_tx) {
         memcpy(_pending_tx, data, data_len);
         _pending_tx_len = data_len;
@@ -243,6 +255,21 @@ void KissModem::handleHardwareCommand(uint8_t sub_cmd, const uint8_t* data, uint
     case HW_CMD_GET_SIGNAL_REPORT:
       handleGetSignalReport();
       break;
+    case HW_CMD_GET_OVERRIDE_STATUS:
+      handleGetOverrideStatus();
+      break;
+    case HW_CMD_SET_OVERRIDE:
+      handleSetOverride(data, len);
+      break;
+    case HW_CMD_CLEAR_OVERRIDE:
+      handleClearOverride(data, len);
+      break;
+    case HW_CMD_CLEAR_VOLATILE_OVERRIDES:
+      handleClearVolatileOverrides();
+      break;
+    case HW_CMD_GET_EFFECTIVE_POLICY:
+      handleGetEffectivePolicy();
+      break;
     default:
       writeHardwareError(HW_ERR_UNKNOWN_CMD);
       break;
@@ -250,6 +277,15 @@ void KissModem::handleHardwareCommand(uint8_t sub_cmd, const uint8_t* data, uint
 }
 
 void KissModem::processTx() {
+  purgeExpiredOverrides();
+  if (_has_pending_tx && _tx_state != TX_SENDING && isOverrideActive(OVERRIDE_KIND_TX_INHIBIT)) {
+    _has_pending_tx = false;
+    _pending_tx_len = 0;
+    _tx_state = TX_IDLE;
+    writeHardwareError(HW_ERR_TX_INHIBITED);
+    return;
+  }
+
   switch (_tx_state) {
     case TX_IDLE:
       if (_has_pending_tx) {
@@ -578,4 +614,262 @@ void KissModem::handleSetSignalReport(const uint8_t* data, uint16_t len) {
 void KissModem::handleGetSignalReport() {
   uint8_t val = _signal_report_enabled ? 0x01 : 0x00;
   writeHardwareFrame(HW_RESP(HW_CMD_GET_SIGNAL_REPORT), &val, 1);
+}
+
+void KissModem::handleGetOverrideStatus() {
+  writeOverrideStatus(HW_RESP_OVERRIDE_STATUS);
+}
+
+void KissModem::handleSetOverride(const uint8_t* data, uint16_t len) {
+  uint8_t kind = 0;
+  uint8_t value = 1;
+  uint32_t ttl_ms = OVERRIDE_DEFAULT_TTL_MS;
+
+  if (!parseOverrideTlv(data, len, &kind, &value, &ttl_ms)) {
+    _last_override_reason = HW_ERR_INVALID_LENGTH;
+    writeHardwareError(HW_ERR_INVALID_LENGTH);
+    return;
+  }
+
+  if (!isOverrideKindSupported(kind)) {
+    _last_override_reason = HW_ERR_INVALID_PARAM;
+    writeHardwareError(HW_ERR_INVALID_PARAM);
+    return;
+  }
+
+  if (!applyOverride(kind, value, ttl_ms)) {
+    _last_override_reason = HW_ERR_INVALID_PARAM;
+    writeHardwareError(HW_ERR_INVALID_PARAM);
+    return;
+  }
+
+  _last_override_reason = 0;
+  writeOverrideStatus(HW_RESP_OVERRIDE_STATUS);
+}
+
+void KissModem::handleClearOverride(const uint8_t* data, uint16_t len) {
+  uint8_t kind = 0;
+  uint8_t value = 0;
+  uint32_t ttl_ms = 0;
+
+  if (len == 1) {
+    kind = data[0];
+  } else if (!parseOverrideTlv(data, len, &kind, &value, &ttl_ms)) {
+    _last_override_reason = HW_ERR_INVALID_LENGTH;
+    writeHardwareError(HW_ERR_INVALID_LENGTH);
+    return;
+  }
+
+  if (kind == 0 || !clearOverrideKind(kind)) {
+    _last_override_reason = HW_ERR_INVALID_PARAM;
+    writeHardwareError(HW_ERR_INVALID_PARAM);
+    return;
+  }
+
+  _last_override_reason = 0;
+  writeOverrideStatus(HW_RESP_OVERRIDE_STATUS);
+}
+
+void KissModem::handleClearVolatileOverrides() {
+  for (uint8_t i = 0; i < KISS_MAX_OVERRIDES; i++) {
+    _overrides[i].active = false;
+    _overrides[i].kind = 0;
+    _overrides[i].value = 0;
+    _overrides[i].expires_at_ms = 0;
+  }
+  _last_override_reason = 0;
+  writeOverrideStatus(HW_RESP_OVERRIDE_STATUS);
+}
+
+void KissModem::handleGetEffectivePolicy() {
+  writeOverrideStatus(HW_RESP_EFFECTIVE_POLICY);
+}
+
+void KissModem::purgeExpiredOverrides() {
+  uint32_t now = millis();
+  for (uint8_t i = 0; i < KISS_MAX_OVERRIDES; i++) {
+    if (_overrides[i].active &&
+        _overrides[i].expires_at_ms != 0 &&
+        (int32_t)(now - _overrides[i].expires_at_ms) >= 0) {
+      _overrides[i].active = false;
+      _overrides[i].kind = 0;
+      _overrides[i].value = 0;
+      _overrides[i].expires_at_ms = 0;
+    }
+  }
+}
+
+bool KissModem::parseOverrideTlv(const uint8_t* data, uint16_t len, uint8_t* kind, uint8_t* value, uint32_t* ttl_ms) {
+  bool saw_kind = false;
+  uint16_t offset = 0;
+
+  while (offset < len) {
+    if (offset + 2 > len) return false;
+    uint8_t field = data[offset++];
+    uint8_t field_len = data[offset++];
+    if (offset + field_len > len) return false;
+
+    const uint8_t* field_value = data + offset;
+    switch (field) {
+      case OVERRIDE_TLV_KIND:
+        if (field_len != 1) return false;
+        *kind = field_value[0];
+        saw_kind = true;
+        break;
+      case OVERRIDE_TLV_VALUE:
+        if (field_len < 1) return false;
+        *value = field_value[0];
+        break;
+      case OVERRIDE_TLV_TTL_MS:
+        if (field_len != 4) return false;
+        *ttl_ms = ((uint32_t)field_value[0]) |
+                  ((uint32_t)field_value[1] << 8) |
+                  ((uint32_t)field_value[2] << 16) |
+                  ((uint32_t)field_value[3] << 24);
+        break;
+      case OVERRIDE_TLV_SCOPE:
+      case OVERRIDE_TLV_TARGET:
+      case OVERRIDE_TLV_REASON:
+        break;
+      default:
+        break;
+    }
+
+    offset += field_len;
+  }
+
+  return saw_kind;
+}
+
+bool KissModem::isOverrideKindSupported(uint8_t kind) const {
+  switch (kind) {
+    case OVERRIDE_KIND_FORCE_LEAF:
+    case OVERRIDE_KIND_FORCE_RELAY:
+    case OVERRIDE_KIND_QUIET_MODE:
+    case OVERRIDE_KIND_TX_INHIBIT:
+    case OVERRIDE_KIND_DISPLAY_PAGE:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool KissModem::applyOverride(uint8_t kind, uint8_t value, uint32_t ttl_ms) {
+  if (kind == 0) return false;
+  if (value == 0 || ttl_ms == 0) return clearOverrideKind(kind);
+
+  int8_t free_slot = -1;
+  for (uint8_t i = 0; i < KISS_MAX_OVERRIDES; i++) {
+    if (_overrides[i].active && _overrides[i].kind == kind) {
+      free_slot = i;
+      break;
+    }
+    if (!_overrides[i].active && free_slot < 0) {
+      free_slot = i;
+    }
+  }
+
+  if (free_slot < 0) return false;
+
+  _overrides[free_slot].active = true;
+  _overrides[free_slot].kind = kind;
+  _overrides[free_slot].value = value;
+  _overrides[free_slot].expires_at_ms = millis() + ttl_ms;
+  return true;
+}
+
+bool KissModem::clearOverrideKind(uint8_t kind) {
+  bool cleared = false;
+  for (uint8_t i = 0; i < KISS_MAX_OVERRIDES; i++) {
+    if (_overrides[i].active && _overrides[i].kind == kind) {
+      _overrides[i].active = false;
+      _overrides[i].kind = 0;
+      _overrides[i].value = 0;
+      _overrides[i].expires_at_ms = 0;
+      cleared = true;
+    }
+  }
+  return cleared || isOverrideKindSupported(kind);
+}
+
+bool KissModem::isOverrideActive(uint8_t kind) const {
+  for (uint8_t i = 0; i < KISS_MAX_OVERRIDES; i++) {
+    if (_overrides[i].active && _overrides[i].kind == kind && _overrides[i].value != 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+uint8_t KissModem::getOverrideFlagMask() const {
+  uint8_t flags = 0;
+  if (isOverrideActive(OVERRIDE_KIND_FORCE_LEAF)) flags |= OVERRIDE_FLAG_FORCE_LEAF;
+  if (isOverrideActive(OVERRIDE_KIND_FORCE_RELAY)) flags |= OVERRIDE_FLAG_FORCE_RELAY;
+  if (isOverrideActive(OVERRIDE_KIND_QUIET_MODE)) flags |= OVERRIDE_FLAG_QUIET_MODE;
+  if (isOverrideActive(OVERRIDE_KIND_TX_INHIBIT)) flags |= OVERRIDE_FLAG_TX_INHIBIT;
+  if (isOverrideActive(OVERRIDE_KIND_DISPLAY_PAGE)) flags |= OVERRIDE_FLAG_DISPLAY_PAGE;
+  return flags;
+}
+
+uint8_t KissModem::getActiveOverrideCount() const {
+  uint8_t count = 0;
+  for (uint8_t i = 0; i < KISS_MAX_OVERRIDES; i++) {
+    if (_overrides[i].active) count++;
+  }
+  return count;
+}
+
+uint8_t KissModem::getEffectiveRoleCode() const {
+  if (isOverrideActive(OVERRIDE_KIND_QUIET_MODE)) return OVERRIDE_ROLE_QUIET;
+  if (isOverrideActive(OVERRIDE_KIND_FORCE_LEAF)) return OVERRIDE_ROLE_LEAF;
+  if (isOverrideActive(OVERRIDE_KIND_FORCE_RELAY)) return OVERRIDE_ROLE_RELAY;
+  return OVERRIDE_ROLE_AUTO;
+}
+
+uint32_t KissModem::getNextOverrideTtlMs() const {
+  uint32_t now = millis();
+  uint32_t next_ttl_ms = 0;
+
+  for (uint8_t i = 0; i < KISS_MAX_OVERRIDES; i++) {
+    if (!_overrides[i].active || _overrides[i].expires_at_ms == 0) continue;
+    if ((int32_t)(now - _overrides[i].expires_at_ms) >= 0) continue;
+
+    uint32_t remaining = _overrides[i].expires_at_ms - now;
+    if (next_ttl_ms == 0 || remaining < next_ttl_ms) {
+      next_ttl_ms = remaining;
+    }
+  }
+
+  return next_ttl_ms;
+}
+
+void KissModem::writeOverrideStatus(uint8_t response_subcommand) {
+  purgeExpiredOverrides();
+
+  uint32_t next_ttl_ms = getNextOverrideTtlMs();
+  uint8_t buf[9];
+  buf[0] = OVERRIDE_STATUS_VERSION;
+  buf[1] = getOverrideFlagMask();
+  buf[2] = getActiveOverrideCount();
+  buf[3] = getEffectiveRoleCode();
+  buf[4] = _last_override_reason;
+  buf[5] = (uint8_t)(next_ttl_ms & 0xFF);
+  buf[6] = (uint8_t)((next_ttl_ms >> 8) & 0xFF);
+  buf[7] = (uint8_t)((next_ttl_ms >> 16) & 0xFF);
+  buf[8] = (uint8_t)((next_ttl_ms >> 24) & 0xFF);
+
+  writeHardwareFrame(response_subcommand, buf, sizeof(buf));
+}
+
+const char* KissModem::getEffectiveRoleLabel() const {
+  switch (getEffectiveRoleCode()) {
+    case OVERRIDE_ROLE_QUIET:
+      return "QUIET";
+    case OVERRIDE_ROLE_LEAF:
+      return "LEAF";
+    case OVERRIDE_ROLE_RELAY:
+      return "RELAY";
+    default:
+      return "AUTO";
+  }
 }

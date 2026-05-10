@@ -53,6 +53,11 @@
 #define HW_CMD_REBOOT            0x18
 #define HW_CMD_SET_SIGNAL_REPORT 0x19
 #define HW_CMD_GET_SIGNAL_REPORT 0x1A
+#define HW_CMD_GET_OVERRIDE_STATUS       0x40
+#define HW_CMD_SET_OVERRIDE              0x41
+#define HW_CMD_CLEAR_OVERRIDE            0x42
+#define HW_CMD_CLEAR_VOLATILE_OVERRIDES  0x43
+#define HW_CMD_GET_EFFECTIVE_POLICY      0x45
 
 /* Response code = command code | 0x80.  Generic / unsolicited use 0xF0+. */
 #define HW_RESP(cmd)             ((cmd) | 0x80)
@@ -65,14 +70,55 @@
 #define HW_RESP_TX_DONE          0xF8
 #define HW_RESP_RX_META          0xF9
 
+/* Cinder experimental override responses. */
+#define HW_RESP_OVERRIDE_STATUS  0xA0
+#define HW_RESP_EFFECTIVE_POLICY 0xA2
+
 #define HW_ERR_INVALID_LENGTH    0x01
 #define HW_ERR_INVALID_PARAM     0x02
 #define HW_ERR_NO_CALLBACK       0x03
 #define HW_ERR_MAC_FAILED        0x04
 #define HW_ERR_UNKNOWN_CMD       0x05
 #define HW_ERR_ENCRYPT_FAILED    0x06
+#define HW_ERR_TX_INHIBITED      0x07
 
-#define KISS_FIRMWARE_VERSION 1
+#define KISS_FIRMWARE_VERSION 2
+
+#define KISS_MAX_OVERRIDES 8
+
+#define OVERRIDE_TLV_KIND        0x01
+#define OVERRIDE_TLV_SCOPE       0x02
+#define OVERRIDE_TLV_TARGET      0x03
+#define OVERRIDE_TLV_VALUE       0x04
+#define OVERRIDE_TLV_TTL_MS      0x05
+#define OVERRIDE_TLV_REASON      0x06
+
+#define OVERRIDE_KIND_FORCE_LEAF           0x01
+#define OVERRIDE_KIND_FORCE_RELAY          0x02
+#define OVERRIDE_KIND_QUIET_MODE           0x03
+#define OVERRIDE_KIND_TX_INHIBIT           0x04
+#define OVERRIDE_KIND_ADVERT_CADENCE       0x05
+#define OVERRIDE_KIND_RADIO_PROFILE        0x06
+#define OVERRIDE_KIND_PIN_NEXT_HOP         0x07
+#define OVERRIDE_KIND_DENY_PEER            0x08
+#define OVERRIDE_KIND_CLEAR_ROUTE_CACHE    0x09
+#define OVERRIDE_KIND_CLEAR_NEIGHBOR_CACHE 0x0A
+#define OVERRIDE_KIND_EMERGENCY_PROFILE    0x0B
+#define OVERRIDE_KIND_DISPLAY_PAGE         0x0C
+
+#define OVERRIDE_FLAG_FORCE_LEAF   0x01
+#define OVERRIDE_FLAG_FORCE_RELAY  0x02
+#define OVERRIDE_FLAG_QUIET_MODE   0x04
+#define OVERRIDE_FLAG_TX_INHIBIT   0x08
+#define OVERRIDE_FLAG_DISPLAY_PAGE 0x10
+
+#define OVERRIDE_ROLE_AUTO  0x00
+#define OVERRIDE_ROLE_LEAF  0x01
+#define OVERRIDE_ROLE_RELAY 0x02
+#define OVERRIDE_ROLE_QUIET 0x03
+
+#define OVERRIDE_STATUS_VERSION 1
+#define OVERRIDE_DEFAULT_TTL_MS 300000UL
 
 typedef void (*SetRadioCallback)(float freq, float bw, uint8_t sf, uint8_t cr);
 typedef void (*SetTxPowerCallback)(uint8_t power);
@@ -85,6 +131,13 @@ struct RadioConfig {
   uint8_t sf;
   uint8_t cr;
   uint8_t tx_power;
+};
+
+struct OverrideEntry {
+  bool active;
+  uint8_t kind;
+  uint8_t value;
+  uint32_t expires_at_ms;
 };
 
 enum TxState {
@@ -128,6 +181,8 @@ class KissModem {
 
   RadioConfig _config;
   bool _signal_report_enabled;
+  OverrideEntry _overrides[KISS_MAX_OVERRIDES];
+  uint8_t _last_override_reason;
 
   void writeByte(uint8_t b);
   void writeFrame(uint8_t type, const uint8_t* data, uint16_t len);
@@ -163,6 +218,23 @@ class KissModem {
   void handleGetDeviceName();
   void handleSetSignalReport(const uint8_t* data, uint16_t len);
   void handleGetSignalReport();
+  void handleGetOverrideStatus();
+  void handleSetOverride(const uint8_t* data, uint16_t len);
+  void handleClearOverride(const uint8_t* data, uint16_t len);
+  void handleClearVolatileOverrides();
+  void handleGetEffectivePolicy();
+
+  void purgeExpiredOverrides();
+  bool parseOverrideTlv(const uint8_t* data, uint16_t len, uint8_t* kind, uint8_t* value, uint32_t* ttl_ms);
+  bool isOverrideKindSupported(uint8_t kind) const;
+  bool applyOverride(uint8_t kind, uint8_t value, uint32_t ttl_ms);
+  bool clearOverrideKind(uint8_t kind);
+  bool isOverrideActive(uint8_t kind) const;
+  uint8_t getOverrideFlagMask() const;
+  uint8_t getActiveOverrideCount() const;
+  uint8_t getEffectiveRoleCode() const;
+  uint32_t getNextOverrideTtlMs() const;
+  void writeOverrideStatus(uint8_t response_subcommand);
 
 public:
   KissModem(Stream& serial, mesh::LocalIdentity& identity, mesh::RNG& rng,
@@ -180,4 +252,8 @@ public:
   bool isTxBusy() const { return _tx_state != TX_IDLE; }
   /** True only when radio is actually transmitting; use to skip recvRaw in main loop. */
   bool isActuallyTransmitting() const { return _tx_state == TX_SENDING; }
+  bool isTxInhibited() const { return isOverrideActive(OVERRIDE_KIND_TX_INHIBIT); }
+  bool isQuietMode() const { return isOverrideActive(OVERRIDE_KIND_QUIET_MODE); }
+  uint8_t getOverrideFlags() const { return getOverrideFlagMask(); }
+  const char* getEffectiveRoleLabel() const;
 };
