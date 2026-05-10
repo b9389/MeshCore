@@ -134,7 +134,7 @@ Response codes use the high-bit convention: `response = command | 0x80`. Generic
 | Airtime | `0x8F` | Milliseconds (4) |
 | NoiseFloor | `0x90` | dBm (2, signed) |
 | Version | `0x91` | Version (1) + Reserved (1) |
-| Stats | `0x92` | RX (4) + TX (4) + Errors (4) |
+| Stats | `0x92` | RX (4) + TX (4) + Errors (4), optional QueueLen (2) + QueueCapacity (2) |
 | Battery | `0x93` | Millivolts (2) |
 | MCUTemp | `0x94` | Temperature (2, signed) |
 | Sensors | `0x95` | CayenneLPP payload |
@@ -143,7 +143,7 @@ Response codes use the high-bit convention: `response = command | 0x80`. Generic
 | SignalReport | `0x9A` | Status (1): 0x00=disabled, 0x01=enabled |
 | OK | `0xF0` | - |
 | Error | `0xF1` | Error code (1) |
-| TxDone | `0xF8` | Result (1): 0x00=failed, 0x01=success |
+| TxDone | `0xF8` | Result (1), optional DurationMs (4) + QueueLen (2) + QueueCapacity (2) |
 | RxMeta | `0xF9` | SNR (1) + RSSI (1) |
 
 ### Error Codes
@@ -161,7 +161,7 @@ Response codes use the high-bit convention: `response = command | 0x80`. Generic
 
 The TNC sends these SetHardware frames without a preceding request:
 
-**TxDone (0xF8)**: Sent after a packet has been transmitted. Contains a single byte: 0x01 for success, 0x00 for failure.
+**TxDone (0xF8)**: Sent after a packet has been transmitted. Legacy payloads contain a single byte: 0x01 for success, 0x00 for failure. Extended payloads append TX duration in milliseconds and queue occupancy.
 
 **RxMeta (0xF9)**: Sent immediately after each standard data frame (type 0x00) with metadata for the received packet. Contains SNR (1 byte, signed, value x4 for 0.25 dB precision) followed by RSSI (1 byte, signed, dBm). Enabled by default; can be toggled with SetSignalReport. Standard KISS clients ignore this frame.
 
@@ -184,6 +184,8 @@ All values little-endian.
 |-------|------|-------------|
 | Version | 1 byte | Firmware version |
 | Reserved | 1 byte | Always 0 |
+
+Version `3` adds extended `Stats` and `TxDone` telemetry while retaining compatibility with legacy host parsers.
 
 ### Encrypted (Encrypted response)
 
@@ -219,6 +221,23 @@ All values little-endian.
 | RX | 4 bytes | Packets received |
 | TX | 4 bytes | Packets transmitted |
 | Errors | 4 bytes | Receive errors |
+| QueueLen | 2 bytes | Optional pending TX queue depth |
+| QueueCapacity | 2 bytes | Optional TX queue capacity |
+
+The current KISS modem uses a single pending TX slot, so QueueLen is `0` or `1` and QueueCapacity is `1`. Hosts should continue to accept the legacy 12-byte payload without queue fields.
+
+### TxDone (TxDone event)
+
+All multi-byte values are little-endian.
+
+| Field | Size | Description |
+|-------|------|-------------|
+| Result | 1 byte | `0x00` = failed, `0x01` = success |
+| DurationMs | 4 bytes | Optional elapsed radio-send time in milliseconds |
+| QueueLen | 2 bytes | Optional pending TX queue depth after completion |
+| QueueCapacity | 2 bytes | Optional TX queue capacity |
+
+Hosts should continue to accept the legacy one-byte payload. The extended fields are intended for bench observability and route-pressure feedback.
 
 ### Battery (Battery response)
 

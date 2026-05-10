@@ -16,6 +16,8 @@ KissModem::KissModem(Stream& serial, mesh::LocalIdentity& identity, mesh::RNG& r
   _fullduplex = 0;
   _tx_state = TX_IDLE;
   _tx_timer = 0;
+  _tx_started_ms = 0;
+  _last_tx_duration_ms = 0;
   _setRadioCallback = nullptr;
   _setTxPowerCallback = nullptr;
   _getCurrentRssiCallback = nullptr;
@@ -34,6 +36,8 @@ void KissModem::begin() {
   _rx_active = false;
   _has_pending_tx = false;
   _tx_state = TX_IDLE;
+  _tx_started_ms = 0;
+  _last_tx_duration_ms = 0;
   purgeExpiredOverrides();
 }
 
@@ -320,6 +324,7 @@ void KissModem::processTx() {
 
     case TX_DELAY:
       if (millis() - _tx_timer >= (uint32_t)_txdelay * 10) {
+        _tx_started_ms = millis();
         _radio.startSendRaw(_pending_tx, _pending_tx_len);
         _tx_state = TX_SENDING;
       }
@@ -328,8 +333,15 @@ void KissModem::processTx() {
     case TX_SENDING:
       if (_radio.isSendComplete()) {
         _radio.onSendFinished();
-        uint8_t result = 0x01;
-        writeHardwareFrame(HW_RESP_TX_DONE, &result, 1);
+        _last_tx_duration_ms = millis() - _tx_started_ms;
+        uint8_t tx_done[9];
+        tx_done[0] = 0x01;
+        memcpy(tx_done + 1, &_last_tx_duration_ms, 4);
+        uint16_t queue_len = 0;
+        uint16_t queue_capacity = 1;
+        memcpy(tx_done + 5, &queue_len, 2);
+        memcpy(tx_done + 7, &queue_capacity, 2);
+        writeHardwareFrame(HW_RESP_TX_DONE, tx_done, sizeof(tx_done));
         _has_pending_tx = false;
         _tx_state = TX_IDLE;
       }
@@ -548,11 +560,15 @@ void KissModem::handleGetStats() {
 
   uint32_t rx, tx, errors;
   _getStatsCallback(&rx, &tx, &errors);
-  uint8_t buf[12];
+  uint8_t buf[16];
+  uint16_t queue_len = _has_pending_tx ? 1 : 0;
+  uint16_t queue_capacity = 1;
   memcpy(buf, &rx, 4);
   memcpy(buf + 4, &tx, 4);
   memcpy(buf + 8, &errors, 4);
-  writeHardwareFrame(HW_RESP(HW_CMD_GET_STATS), buf, 12);
+  memcpy(buf + 12, &queue_len, 2);
+  memcpy(buf + 14, &queue_capacity, 2);
+  writeHardwareFrame(HW_RESP(HW_CMD_GET_STATS), buf, sizeof(buf));
 }
 
 void KissModem::handleGetBattery() {

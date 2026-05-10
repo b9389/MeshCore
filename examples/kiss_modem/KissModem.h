@@ -82,7 +82,7 @@
 #define HW_ERR_ENCRYPT_FAILED    0x06
 #define HW_ERR_TX_INHIBITED      0x07
 
-#define KISS_FIRMWARE_VERSION 2
+#define KISS_FIRMWARE_VERSION 3
 
 #define KISS_MAX_OVERRIDES 8
 
@@ -173,6 +173,8 @@ class KissModem {
 
   TxState _tx_state;
   uint32_t _tx_timer;
+  uint32_t _tx_started_ms;
+  uint32_t _last_tx_duration_ms;
 
   SetRadioCallback _setRadioCallback;
   SetTxPowerCallback _setTxPowerCallback;
