@@ -287,10 +287,11 @@ The Cinder gateway GUI firmware updater accepts ESP32-S3 app images built by Pla
 python3 scripts/publish_cinder_firmware.py \
   --gateway http://10.0.0.68:9080 \
   --env Heltec_v3_kiss_modem \
+  --env LilyGo_T-Echo_kiss_modem \
   --build
 ```
 
-The script reads `KISS_FIRMWARE_VERSION`, converts it to the existing display version format such as `0A00`, uploads `.pio/build/<env>/firmware.bin`, and records the current git commit in the gateway artifact manifest. The gateway updater writes only the ESP32 app image at offset `0x10000`; bootloader and partition updates remain manual.
+The script reads `KISS_FIRMWARE_VERSION`, converts it to the existing display version format such as `0A00`, uploads the correct PlatformIO artifact for each target, and records the current git commit in the gateway artifact manifest. Heltec V3/V4 artifacts use `firmware.bin` and the gateway writes only the ESP32 app image at offset `0x10000`; T-Echo artifacts use the nRF52 `firmware.zip` DFU package.
 
 ### Battery (Battery response)
 

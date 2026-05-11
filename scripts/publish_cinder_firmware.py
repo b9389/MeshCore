@@ -19,8 +19,18 @@ ROOT = Path(__file__).resolve().parents[1]
 PIO = Path.home() / ".platformio" / "penv" / "bin" / "pio"
 
 ENV_TARGETS = {
-    "Heltec_v3_kiss_modem": "heltec-v3",
-    "heltec_v4_kiss_modem": "heltec-v4",
+    "Heltec_v3_kiss_modem": {
+        "target": "heltec-v3",
+        "artifact": "firmware.bin",
+    },
+    "heltec_v4_kiss_modem": {
+        "target": "heltec-v4",
+        "artifact": "firmware.bin",
+    },
+    "LilyGo_T-Echo_kiss_modem": {
+        "target": "t-echo",
+        "artifact": "firmware.zip",
+    },
 }
 
 
@@ -59,7 +69,7 @@ def multipart(fields: dict[str, str], file_path: Path) -> tuple[bytes, str]:
     chunks.append(f"--{boundary}\r\n".encode())
     chunks.append(
         (
-            'Content-Disposition: form-data; name="file"; filename="firmware.bin"\r\n'
+            f'Content-Disposition: form-data; name="file"; filename="{file_path.name}"\r\n'
             "Content-Type: application/octet-stream\r\n\r\n"
         ).encode()
     )
@@ -69,20 +79,21 @@ def multipart(fields: dict[str, str], file_path: Path) -> tuple[bytes, str]:
     return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
 
 
-def upload(gateway: str, env: str, target: str, version: str, fw_number: int) -> None:
-    firmware_bin = ROOT / ".pio" / "build" / env / "firmware.bin"
-    if not firmware_bin.exists():
-        raise SystemExit(f"missing {firmware_bin}; run with --build or build this env first")
+def upload(gateway: str, env: str, version: str, fw_number: int) -> None:
+    target_info = ENV_TARGETS[env]
+    artifact_path = ROOT / ".pio" / "build" / env / target_info["artifact"]
+    if not artifact_path.exists():
+        raise SystemExit(f"missing {artifact_path}; run with --build or build this env first")
 
     fields = {
-        "target": target,
+        "target": target_info["target"],
         "env": env,
         "version": version,
         "firmware_version": str(fw_number),
         "git_commit": git_commit(),
         "notes": f"published from MeshCore at {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
     }
-    body, content_type = multipart(fields, firmware_bin)
+    body, content_type = multipart(fields, artifact_path)
     url = gateway.rstrip("/") + "/api/firmware/artifacts"
     request = urllib.request.Request(
         url,
@@ -95,7 +106,7 @@ def upload(gateway: str, env: str, target: str, version: str, fw_number: int) ->
     artifact = payload["artifact"]
     print(
         f"uploaded {env} -> {artifact['artifact_id']} "
-        f"target={target} version={version} sha256={artifact['sha256'][:16]}"
+        f"target={target_info['target']} version={version} sha256={artifact['sha256'][:16]}"
     )
 
 
@@ -113,7 +124,7 @@ def main() -> int:
     for env in args.env:
         if args.build:
             build_env(env)
-        upload(args.gateway, env, ENV_TARGETS[env], version, fw_number)
+        upload(args.gateway, env, version, fw_number)
     return 0
 
 
