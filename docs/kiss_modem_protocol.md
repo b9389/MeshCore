@@ -165,6 +165,9 @@ Response codes use the high-bit convention: `response = command | 0x80`. Generic
 | MacFailed | `0x04` | MAC verification failed |
 | UnknownCmd | `0x05` | Unknown sub-command |
 | EncryptFailed | `0x06` | Encryption failed |
+| TxInhibited | `0x07` | Local TX inhibit override rejected the send |
+| TxQueueFull | `0x08` | TX queue or queued-airtime budget is full |
+| TxBackpressure | `0x09` | Low-priority/data TX was rejected by scheduler high-water admission before queue-full |
 
 ### Unsolicited Events
 
@@ -194,7 +197,7 @@ All values little-endian.
 | Version | 1 byte | Firmware version |
 | Reserved | 1 byte | Always 0 |
 
-Version `3` adds extended `Stats` and `TxDone` telemetry while retaining compatibility with legacy host parsers. Version `4` adds Cinder `CapabilityStatus` so hosts can gate protocol features on firmware-declared support instead of static board assumptions.
+Version `3` adds extended `Stats` and `TxDone` telemetry while retaining compatibility with legacy host parsers. Version `4` adds Cinder `CapabilityStatus` so hosts can gate protocol features on firmware-declared support instead of static board assumptions. Versions `5` through `7` add the Cinder bench priority queue, scheduler guard/defer diagnostics, and queued-airtime/drop telemetry. Version `8` adds low-priority/data backpressure before the four-frame queue reaches full scale.
 
 ### CapabilityStatus (CapabilityStatus response)
 
@@ -209,7 +212,7 @@ All multi-byte values are little-endian. This is a firmware control-plane status
 | FeatureFlags | 4 bytes | Cinder capability bitset; current firmware sets override control and firmware diagnostics |
 | SupportedTransports | 2 bytes | Cinder transport bitmask; current firmware sets LoRa and serial |
 | MaxLowRatePayloadBytes | 2 bytes | Current Cinder low-rate payload target, `192` bytes |
-| MaxQueueFrames | 2 bytes | Firmware TX queue capacity, currently `1` |
+| MaxQueueFrames | 2 bytes | Firmware TX queue capacity, currently `4` |
 | OverrideFlags | 1 byte | Same flag mask used by OverrideStatus |
 | Reserved | 1 byte | Must be ignored by hosts |
 
@@ -249,8 +252,15 @@ All values little-endian.
 | Errors | 4 bytes | Receive errors |
 | QueueLen | 2 bytes | Optional pending TX queue depth |
 | QueueCapacity | 2 bytes | Optional TX queue capacity |
+| SchedulerDelayMs | 4 bytes | Optional next scheduler/admission delay |
+| SchedulerDeferReason | 1 byte | Optional scheduler defer/drop reason |
+| TxState | 1 byte | Optional scheduler TX state |
+| SchedulerQueuedAirtimeMs | 4 bytes | Optional currently queued firmware-estimated airtime |
+| SchedulerAirtimeBudgetMs | 4 bytes | Optional queued-airtime budget |
+| SchedulerDropCount | 4 bytes | Optional cumulative scheduler rejects/drops |
+| SchedulerLastDropReason | 1 byte | Optional last scheduler drop reason |
 
-The current KISS modem uses a single pending TX slot, so QueueLen is `0` or `1` and QueueCapacity is `1`. Hosts should continue to accept the legacy 12-byte payload without queue fields.
+The current Cinder bench KISS modem uses a four-frame priority TX queue. Hosts should continue to accept the legacy 12-byte payload without queue fields.
 
 ### TxDone (TxDone event)
 
@@ -262,6 +272,8 @@ All multi-byte values are little-endian.
 | DurationMs | 4 bytes | Optional elapsed radio-send time in milliseconds |
 | QueueLen | 2 bytes | Optional pending TX queue depth after completion |
 | QueueCapacity | 2 bytes | Optional TX queue capacity |
+| SchedulerDelayMs | 4 bytes | Optional next scheduler/admission delay |
+| SchedulerDeferReason | 1 byte | Optional scheduler defer/drop reason |
 
 Hosts should continue to accept the legacy one-byte payload. The extended fields are intended for bench observability and route-pressure feedback.
 

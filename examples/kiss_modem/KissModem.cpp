@@ -154,7 +154,7 @@ void KissModem::processFrame() {
       }
       if (data_len > 0 && data_len <= KISS_MAX_PACKET_SIZE) {
         if (!enqueueTx(data, data_len)) {
-          writeHardwareError(HW_ERR_TX_QUEUE_FULL);
+          writeHardwareError(getTxRejectErrorCode());
         }
       }
       break;
@@ -321,6 +321,11 @@ bool KissModem::enqueueTx(const uint8_t* data, uint16_t len) {
   uint32_t estimated_airtime_ms = _radio.getEstAirtimeFor(len);
   uint8_t first_reorderable = (_tx_state == TX_SENDING) ? 1 : 0;
 
+  if (shouldBackpressureTx(priority, estimated_airtime_ms)) {
+    recordTxDrop(SCHED_DEFER_BACKPRESSURE);
+    return false;
+  }
+
   if (_tx_queue_len >= KISS_TX_QUEUE_CAPACITY) {
     if (!evictLowerPriorityFor(priority, first_reorderable)) {
       recordTxDrop(SCHED_DEFER_QUEUE_FULL);
@@ -389,6 +394,20 @@ bool KissModem::evictLowerPriorityFor(uint8_t priority, uint8_t first_reorderabl
 bool KissModem::queuedAirtimeWouldFit(uint32_t additional_airtime_ms) const {
   if (additional_airtime_ms > KISS_TX_QUEUE_AIRTIME_BUDGET_MS) return false;
   return _queued_airtime_ms <= KISS_TX_QUEUE_AIRTIME_BUDGET_MS - additional_airtime_ms;
+}
+
+bool KissModem::shouldBackpressureTx(uint8_t priority, uint32_t additional_airtime_ms) const {
+  if (priority < 2) return false;
+  if (_tx_queue_len >= KISS_TX_DATA_QUEUE_HIGH_WATERMARK) return true;
+  if (additional_airtime_ms > KISS_TX_DATA_AIRTIME_HIGH_WATERMARK_MS) return false;
+  return _queued_airtime_ms > KISS_TX_DATA_AIRTIME_HIGH_WATERMARK_MS - additional_airtime_ms;
+}
+
+uint8_t KissModem::getTxRejectErrorCode() const {
+  if (_last_drop_reason == SCHED_DEFER_BACKPRESSURE) {
+    return HW_ERR_TX_BACKPRESSURE;
+  }
+  return HW_ERR_TX_QUEUE_FULL;
 }
 
 uint32_t KissModem::getRemainingTxAdmissionDelayMs(uint32_t now_ms) const {
@@ -1126,6 +1145,8 @@ const char* KissModem::getLastDeferReasonLabel() const {
       return "q-full";
     case SCHED_DEFER_AIRTIME_FULL:
       return "air-full";
+    case SCHED_DEFER_BACKPRESSURE:
+      return "backpress";
     default:
       return "unknown";
   }

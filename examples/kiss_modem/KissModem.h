@@ -29,6 +29,8 @@
 #define KISS_DEFAULT_SLOTTIME    10
 #define KISS_TX_CHANNEL_GUARD_MS 1000UL
 #define KISS_TX_QUEUE_AIRTIME_BUDGET_MS 8000UL
+#define KISS_TX_DATA_QUEUE_HIGH_WATERMARK 3
+#define KISS_TX_DATA_AIRTIME_HIGH_WATERMARK_MS 4000UL
 
 #define HW_CMD_GET_IDENTITY      0x01
 #define HW_CMD_GET_RANDOM        0x02
@@ -87,8 +89,9 @@
 #define HW_ERR_ENCRYPT_FAILED    0x06
 #define HW_ERR_TX_INHIBITED      0x07
 #define HW_ERR_TX_QUEUE_FULL     0x08
+#define HW_ERR_TX_BACKPRESSURE   0x09
 
-#define KISS_FIRMWARE_VERSION 7
+#define KISS_FIRMWARE_VERSION 8
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -97,6 +100,7 @@
 #define SCHED_DEFER_TX_INHIBIT    0x04
 #define SCHED_DEFER_QUEUE_FULL    0x05
 #define SCHED_DEFER_AIRTIME_FULL  0x06
+#define SCHED_DEFER_BACKPRESSURE  0x07
 
 #define CAPABILITY_STATUS_VERSION 1
 #define CINDER_NATIVE_PROTOCOL_VERSION 1
@@ -236,6 +240,8 @@ class KissModem {
   void clearTxQueue();
   bool evictLowerPriorityFor(uint8_t priority, uint8_t first_reorderable);
   bool queuedAirtimeWouldFit(uint32_t additional_airtime_ms) const;
+  bool shouldBackpressureTx(uint8_t priority, uint32_t additional_airtime_ms) const;
+  uint8_t getTxRejectErrorCode() const;
   uint32_t getRemainingTxAdmissionDelayMs(uint32_t now_ms) const;
   uint32_t getSchedulerDelayMs(uint32_t now_ms) const;
   void setLastDefer(uint8_t reason, uint32_t delay_ms);
