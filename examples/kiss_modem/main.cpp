@@ -102,6 +102,14 @@ static void renderDisplay(const char* detail_line = nullptr) {
         modem->getEffectiveRoleLabel(),
         modem->isQuietMode() ? 1U : 0U,
         modem->isTxInhibited() ? 1U : 0U);
+  } else if (modem != nullptr) {
+    snprintf(
+        line,
+        sizeof(line),
+        "STATE %s Q%u/%u",
+        getModemState(),
+        modem->getTxQueueLen(),
+        modem->getTxQueueCapacity());
   } else {
     snprintf(line, sizeof(line), "STATE %s", getModemState());
   }

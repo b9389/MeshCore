@@ -7,8 +7,7 @@ KissModem::KissModem(Stream& serial, mesh::LocalIdentity& identity, mesh::RNG& r
   _rx_len = 0;
   _rx_escaped = false;
   _rx_active = false;
-  _has_pending_tx = false;
-  _pending_tx_len = 0;
+  _tx_queue_len = 0;
   _txdelay = KISS_DEFAULT_TXDELAY;
   _persistence = KISS_DEFAULT_PERSISTENCE;
   _slottime = KISS_DEFAULT_SLOTTIME;
@@ -34,7 +33,7 @@ void KissModem::begin() {
   _rx_len = 0;
   _rx_escaped = false;
   _rx_active = false;
-  _has_pending_tx = false;
+  clearTxQueue();
   _tx_state = TX_IDLE;
   _tx_started_ms = 0;
   _last_tx_duration_ms = 0;
@@ -141,10 +140,10 @@ void KissModem::processFrame() {
         writeHardwareError(HW_ERR_TX_INHIBITED);
         break;
       }
-      if (data_len > 0 && data_len <= KISS_MAX_PACKET_SIZE && !_has_pending_tx) {
-        memcpy(_pending_tx, data, data_len);
-        _pending_tx_len = data_len;
-        _has_pending_tx = true;
+      if (data_len > 0 && data_len <= KISS_MAX_PACKET_SIZE) {
+        if (!enqueueTx(data, data_len)) {
+          writeHardwareError(HW_ERR_TX_QUEUE_FULL);
+        }
       }
       break;
 
@@ -283,11 +282,80 @@ void KissModem::handleHardwareCommand(uint8_t sub_cmd, const uint8_t* data, uint
   }
 }
 
+uint8_t KissModem::getTxPriority(const uint8_t* data, uint16_t len) const {
+  if (len >= 2 && data[0] == CINDER_NATIVE_PROTOCOL_VERSION) {
+    switch (data[1]) {
+      case 0x03: /* ACK */
+      case 0x04: /* NACK */
+        return 0;
+      case 0x05: /* Node advertisement */
+      case 0x06: /* Reachability advertisement */
+      case 0x07: /* Route request */
+      case 0x08: /* Route reply */
+      case 0x09: /* Capability status */
+        return 1;
+      default:
+        break;
+    }
+  }
+
+  return 2;
+}
+
+bool KissModem::enqueueTx(const uint8_t* data, uint16_t len) {
+  if (len == 0 || len > KISS_MAX_PACKET_SIZE) return false;
+
+  uint8_t priority = getTxPriority(data, len);
+  uint8_t first_reorderable = (_tx_state == TX_SENDING) ? 1 : 0;
+
+  if (_tx_queue_len >= KISS_TX_QUEUE_CAPACITY) {
+    int8_t evict_index = -1;
+    for (int8_t i = (int8_t)_tx_queue_len - 1; i >= (int8_t)first_reorderable; i--) {
+      if (_tx_queue[i].priority > priority) {
+        evict_index = i;
+        break;
+      }
+    }
+    if (evict_index < 0) return false;
+    dropQueuedTxAt((uint8_t)evict_index);
+  }
+
+  uint8_t insert_index = first_reorderable;
+  while (insert_index < _tx_queue_len && _tx_queue[insert_index].priority <= priority) {
+    insert_index++;
+  }
+
+  for (uint8_t i = _tx_queue_len; i > insert_index; i--) {
+    _tx_queue[i] = _tx_queue[i - 1];
+  }
+
+  memcpy(_tx_queue[insert_index].data, data, len);
+  _tx_queue[insert_index].len = len;
+  _tx_queue[insert_index].priority = priority;
+  _tx_queue_len++;
+  return true;
+}
+
+void KissModem::dropQueuedTxAt(uint8_t index) {
+  if (index >= _tx_queue_len) return;
+  for (uint8_t i = index; i + 1 < _tx_queue_len; i++) {
+    _tx_queue[i] = _tx_queue[i + 1];
+  }
+  _tx_queue_len--;
+}
+
+void KissModem::popQueuedTx() {
+  dropQueuedTxAt(0);
+}
+
+void KissModem::clearTxQueue() {
+  _tx_queue_len = 0;
+}
+
 void KissModem::processTx() {
   purgeExpiredOverrides();
-  if (_has_pending_tx && _tx_state != TX_SENDING && isOverrideActive(OVERRIDE_KIND_TX_INHIBIT)) {
-    _has_pending_tx = false;
-    _pending_tx_len = 0;
+  if (_tx_queue_len > 0 && _tx_state != TX_SENDING && isOverrideActive(OVERRIDE_KIND_TX_INHIBIT)) {
+    clearTxQueue();
     _tx_state = TX_IDLE;
     writeHardwareError(HW_ERR_TX_INHIBITED);
     return;
@@ -295,7 +363,7 @@ void KissModem::processTx() {
 
   switch (_tx_state) {
     case TX_IDLE:
-      if (_has_pending_tx) {
+      if (_tx_queue_len > 0) {
         if (_fullduplex) {
           _tx_timer = millis();
           _tx_state = TX_DELAY;
@@ -328,8 +396,12 @@ void KissModem::processTx() {
     case TX_DELAY:
       if (millis() - _tx_timer >= (uint32_t)_txdelay * 10) {
         _tx_started_ms = millis();
-        _radio.startSendRaw(_pending_tx, _pending_tx_len);
-        _tx_state = TX_SENDING;
+        if (_tx_queue_len > 0) {
+          _radio.startSendRaw(_tx_queue[0].data, _tx_queue[0].len);
+          _tx_state = TX_SENDING;
+        } else {
+          _tx_state = TX_IDLE;
+        }
       }
       break;
 
@@ -337,15 +409,15 @@ void KissModem::processTx() {
       if (_radio.isSendComplete()) {
         _radio.onSendFinished();
         _last_tx_duration_ms = millis() - _tx_started_ms;
+        popQueuedTx();
         uint8_t tx_done[9];
         tx_done[0] = 0x01;
         memcpy(tx_done + 1, &_last_tx_duration_ms, 4);
-        uint16_t queue_len = 0;
-        uint16_t queue_capacity = 1;
+        uint16_t queue_len = _tx_queue_len;
+        uint16_t queue_capacity = KISS_TX_QUEUE_CAPACITY;
         memcpy(tx_done + 5, &queue_len, 2);
         memcpy(tx_done + 7, &queue_capacity, 2);
         writeHardwareFrame(HW_RESP_TX_DONE, tx_done, sizeof(tx_done));
-        _has_pending_tx = false;
         _tx_state = TX_IDLE;
       }
       break;
@@ -564,8 +636,8 @@ void KissModem::handleGetStats() {
   uint32_t rx, tx, errors;
   _getStatsCallback(&rx, &tx, &errors);
   uint8_t buf[16];
-  uint16_t queue_len = _has_pending_tx ? 1 : 0;
-  uint16_t queue_capacity = 1;
+  uint16_t queue_len = _tx_queue_len;
+  uint16_t queue_capacity = KISS_TX_QUEUE_CAPACITY;
   memcpy(buf, &rx, 4);
   memcpy(buf + 4, &tx, 4);
   memcpy(buf + 8, &errors, 4);
@@ -891,7 +963,7 @@ void KissModem::writeCapabilityStatus() {
                            CINDER_FEATURE_FIRMWARE_DIAGNOSTICS;
   uint16_t supported_transports = CINDER_TRANSPORT_LORA | CINDER_TRANSPORT_SERIAL;
   uint16_t max_low_rate_payload_bytes = CINDER_MAX_LOW_RATE_PAYLOAD_BYTES;
-  uint16_t max_queue_frames = 1;
+  uint16_t max_queue_frames = KISS_TX_QUEUE_CAPACITY;
 
   uint8_t buf[16];
   buf[0] = CAPABILITY_STATUS_VERSION;

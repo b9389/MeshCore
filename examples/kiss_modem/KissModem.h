@@ -13,6 +13,7 @@
 
 #define KISS_MAX_FRAME_SIZE  512
 #define KISS_MAX_PACKET_SIZE 255
+#define KISS_TX_QUEUE_CAPACITY 4
 
 #define KISS_CMD_DATA        0x00
 #define KISS_CMD_TXDELAY     0x01
@@ -83,8 +84,9 @@
 #define HW_ERR_UNKNOWN_CMD       0x05
 #define HW_ERR_ENCRYPT_FAILED    0x06
 #define HW_ERR_TX_INHIBITED      0x07
+#define HW_ERR_TX_QUEUE_FULL     0x08
 
-#define KISS_FIRMWARE_VERSION 4
+#define KISS_FIRMWARE_VERSION 5
 
 #define CAPABILITY_STATUS_VERSION 1
 #define CINDER_NATIVE_PROTOCOL_VERSION 1
@@ -151,6 +153,12 @@ struct OverrideEntry {
   uint32_t expires_at_ms;
 };
 
+struct TxQueueEntry {
+  uint8_t data[KISS_MAX_PACKET_SIZE];
+  uint16_t len;
+  uint8_t priority;
+};
+
 enum TxState {
   TX_IDLE,
   TX_WAIT_CLEAR,
@@ -172,9 +180,8 @@ class KissModem {
   bool _rx_escaped;
   bool _rx_active;
 
-  uint8_t _pending_tx[KISS_MAX_PACKET_SIZE];
-  uint16_t _pending_tx_len;
-  bool _has_pending_tx;
+  TxQueueEntry _tx_queue[KISS_TX_QUEUE_CAPACITY];
+  uint8_t _tx_queue_len;
 
   uint8_t _txdelay;
   uint8_t _persistence;
@@ -204,6 +211,11 @@ class KissModem {
   void processFrame();
   void handleHardwareCommand(uint8_t sub_cmd, const uint8_t* data, uint16_t len);
   void processTx();
+  uint8_t getTxPriority(const uint8_t* data, uint16_t len) const;
+  bool enqueueTx(const uint8_t* data, uint16_t len);
+  void dropQueuedTxAt(uint8_t index);
+  void popQueuedTx();
+  void clearTxQueue();
 
   void handleGetIdentity();
   void handleGetRandom(const uint8_t* data, uint16_t len);
@@ -264,9 +276,11 @@ public:
   void setGetStatsCallback(GetStatsCallback cb) { _getStatsCallback = cb; }
 
   void onPacketReceived(int8_t snr, int8_t rssi, const uint8_t* packet, uint16_t len);
-  bool isTxBusy() const { return _tx_state != TX_IDLE; }
+  bool isTxBusy() const { return _tx_state != TX_IDLE || _tx_queue_len > 0; }
   /** True only when radio is actually transmitting; use to skip recvRaw in main loop. */
   bool isActuallyTransmitting() const { return _tx_state == TX_SENDING; }
+  uint8_t getTxQueueLen() const { return _tx_queue_len; }
+  uint8_t getTxQueueCapacity() const { return KISS_TX_QUEUE_CAPACITY; }
   bool isTxInhibited() const { return isOverrideActive(OVERRIDE_KIND_TX_INHIBIT); }
   bool isQuietMode() const { return isOverrideActive(OVERRIDE_KIND_QUIET_MODE); }
   uint8_t getOverrideFlags() const { return getOverrideFlagMask(); }
