@@ -112,6 +112,12 @@ MeshCore-specific functionality uses the standard KISS SetHardware command. The 
 | Reboot | `0x18` | - |
 | SetSignalReport | `0x19` | Enable (1): 0x00=disable, nonzero=enable |
 | GetSignalReport | `0x1A` | - |
+| GetOverrideStatus | `0x40` | - |
+| SetOverride | `0x41` | Override TLV |
+| ClearOverride | `0x42` | Override TLV or kind byte |
+| ClearVolatileOverrides | `0x43` | - |
+| GetEffectivePolicy | `0x45` | - |
+| GetCapabilityStatus | `0x46` | - |
 
 ### Response Sub-commands (TNC to Host)
 
@@ -141,6 +147,9 @@ Response codes use the high-bit convention: `response = command | 0x80`. Generic
 | DeviceName | `0x96` | Name (variable, UTF-8) |
 | Pong | `0x97` | - |
 | SignalReport | `0x9A` | Status (1): 0x00=disabled, 0x01=enabled |
+| OverrideStatus | `0xA0` | Version (1) + Flags (1) + ActiveCount (1) + EffectiveRole (1) + LastReason (1) + NextTtlMs (4) |
+| EffectivePolicy | `0xA2` | Same payload as OverrideStatus |
+| CapabilityStatus | `0xA3` | Version (1) + NativeProtocolVersion (1) + BearerProfile (1) + EffectiveRole (1) + FeatureFlags (4) + SupportedTransports (2) + MaxLowRatePayloadBytes (2) + MaxQueueFrames (2) + OverrideFlags (1) + Reserved (1) |
 | OK | `0xF0` | - |
 | Error | `0xF1` | Error code (1) |
 | TxDone | `0xF8` | Result (1), optional DurationMs (4) + QueueLen (2) + QueueCapacity (2) |
@@ -185,7 +194,24 @@ All values little-endian.
 | Version | 1 byte | Firmware version |
 | Reserved | 1 byte | Always 0 |
 
-Version `3` adds extended `Stats` and `TxDone` telemetry while retaining compatibility with legacy host parsers.
+Version `3` adds extended `Stats` and `TxDone` telemetry while retaining compatibility with legacy host parsers. Version `4` adds Cinder `CapabilityStatus` so hosts can gate protocol features on firmware-declared support instead of static board assumptions.
+
+### CapabilityStatus (CapabilityStatus response)
+
+All multi-byte values are little-endian. This is a firmware control-plane status response, not an RF-native Cinder frame. Hosts can use it to decide which native status or feature gates they should advertise on behalf of the radio.
+
+| Field | Size | Description |
+|-------|------|-------------|
+| Version | 1 byte | Capability payload version, currently `1` |
+| NativeProtocolVersion | 1 byte | Cinder native protocol version supported by this firmware, currently `1` |
+| BearerProfile | 1 byte | `0x02` = KISS bench bearer |
+| EffectiveRole | 1 byte | `0x00` auto, `0x01` leaf, `0x02` relay, `0x03` quiet |
+| FeatureFlags | 4 bytes | Cinder capability bitset; current firmware sets override control and firmware diagnostics |
+| SupportedTransports | 2 bytes | Cinder transport bitmask; current firmware sets LoRa and serial |
+| MaxLowRatePayloadBytes | 2 bytes | Current Cinder low-rate payload target, `192` bytes |
+| MaxQueueFrames | 2 bytes | Firmware TX queue capacity, currently `1` |
+| OverrideFlags | 1 byte | Same flag mask used by OverrideStatus |
+| Reserved | 1 byte | Must be ignored by hosts |
 
 ### Encrypted (Encrypted response)
 

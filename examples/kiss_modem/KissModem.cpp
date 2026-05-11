@@ -274,6 +274,9 @@ void KissModem::handleHardwareCommand(uint8_t sub_cmd, const uint8_t* data, uint
     case HW_CMD_GET_EFFECTIVE_POLICY:
       handleGetEffectivePolicy();
       break;
+    case HW_CMD_GET_CAPABILITY_STATUS:
+      handleGetCapabilityStatus();
+      break;
     default:
       writeHardwareError(HW_ERR_UNKNOWN_CMD);
       break;
@@ -701,6 +704,10 @@ void KissModem::handleGetEffectivePolicy() {
   writeOverrideStatus(HW_RESP_EFFECTIVE_POLICY);
 }
 
+void KissModem::handleGetCapabilityStatus() {
+  writeCapabilityStatus();
+}
+
 void KissModem::purgeExpiredOverrides() {
   uint32_t now = millis();
   for (uint8_t i = 0; i < KISS_MAX_OVERRIDES; i++) {
@@ -875,6 +882,36 @@ void KissModem::writeOverrideStatus(uint8_t response_subcommand) {
   buf[8] = (uint8_t)((next_ttl_ms >> 24) & 0xFF);
 
   writeHardwareFrame(response_subcommand, buf, sizeof(buf));
+}
+
+void KissModem::writeCapabilityStatus() {
+  purgeExpiredOverrides();
+
+  uint32_t feature_flags = CINDER_FEATURE_OVERRIDE_CONTROL |
+                           CINDER_FEATURE_FIRMWARE_DIAGNOSTICS;
+  uint16_t supported_transports = CINDER_TRANSPORT_LORA | CINDER_TRANSPORT_SERIAL;
+  uint16_t max_low_rate_payload_bytes = CINDER_MAX_LOW_RATE_PAYLOAD_BYTES;
+  uint16_t max_queue_frames = 1;
+
+  uint8_t buf[16];
+  buf[0] = CAPABILITY_STATUS_VERSION;
+  buf[1] = CINDER_NATIVE_PROTOCOL_VERSION;
+  buf[2] = CINDER_BEARER_KISS_BENCH;
+  buf[3] = getEffectiveRoleCode();
+  buf[4] = (uint8_t)(feature_flags & 0xFF);
+  buf[5] = (uint8_t)((feature_flags >> 8) & 0xFF);
+  buf[6] = (uint8_t)((feature_flags >> 16) & 0xFF);
+  buf[7] = (uint8_t)((feature_flags >> 24) & 0xFF);
+  buf[8] = (uint8_t)(supported_transports & 0xFF);
+  buf[9] = (uint8_t)((supported_transports >> 8) & 0xFF);
+  buf[10] = (uint8_t)(max_low_rate_payload_bytes & 0xFF);
+  buf[11] = (uint8_t)((max_low_rate_payload_bytes >> 8) & 0xFF);
+  buf[12] = (uint8_t)(max_queue_frames & 0xFF);
+  buf[13] = (uint8_t)((max_queue_frames >> 8) & 0xFF);
+  buf[14] = getOverrideFlagMask();
+  buf[15] = 0;
+
+  writeHardwareFrame(HW_RESP_CAPABILITY_STATUS, buf, sizeof(buf));
 }
 
 const char* KissModem::getEffectiveRoleLabel() const {

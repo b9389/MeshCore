@@ -58,6 +58,7 @@
 #define HW_CMD_CLEAR_OVERRIDE            0x42
 #define HW_CMD_CLEAR_VOLATILE_OVERRIDES  0x43
 #define HW_CMD_GET_EFFECTIVE_POLICY      0x45
+#define HW_CMD_GET_CAPABILITY_STATUS     0x46
 
 /* Response code = command code | 0x80.  Generic / unsolicited use 0xF0+. */
 #define HW_RESP(cmd)             ((cmd) | 0x80)
@@ -73,6 +74,7 @@
 /* Cinder experimental override responses. */
 #define HW_RESP_OVERRIDE_STATUS  0xA0
 #define HW_RESP_EFFECTIVE_POLICY 0xA2
+#define HW_RESP_CAPABILITY_STATUS 0xA3
 
 #define HW_ERR_INVALID_LENGTH    0x01
 #define HW_ERR_INVALID_PARAM     0x02
@@ -82,7 +84,16 @@
 #define HW_ERR_ENCRYPT_FAILED    0x06
 #define HW_ERR_TX_INHIBITED      0x07
 
-#define KISS_FIRMWARE_VERSION 3
+#define KISS_FIRMWARE_VERSION 4
+
+#define CAPABILITY_STATUS_VERSION 1
+#define CINDER_NATIVE_PROTOCOL_VERSION 1
+#define CINDER_BEARER_KISS_BENCH 0x02
+#define CINDER_TRANSPORT_LORA   0x0001
+#define CINDER_TRANSPORT_SERIAL 0x0010
+#define CINDER_FEATURE_OVERRIDE_CONTROL    0x00000001UL
+#define CINDER_FEATURE_FIRMWARE_DIAGNOSTICS 0x00000040UL
+#define CINDER_MAX_LOW_RATE_PAYLOAD_BYTES 192
 
 #define KISS_MAX_OVERRIDES 8
 
@@ -225,6 +236,7 @@ class KissModem {
   void handleClearOverride(const uint8_t* data, uint16_t len);
   void handleClearVolatileOverrides();
   void handleGetEffectivePolicy();
+  void handleGetCapabilityStatus();
 
   void purgeExpiredOverrides();
   bool parseOverrideTlv(const uint8_t* data, uint16_t len, uint8_t* kind, uint8_t* value, uint32_t* ttl_ms);
@@ -237,6 +249,7 @@ class KissModem {
   uint8_t getEffectiveRoleCode() const;
   uint32_t getNextOverrideTtlMs() const;
   void writeOverrideStatus(uint8_t response_subcommand);
+  void writeCapabilityStatus();
 
 public:
   KissModem(Stream& serial, mesh::LocalIdentity& identity, mesh::RNG& rng,
