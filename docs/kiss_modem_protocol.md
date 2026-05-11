@@ -152,7 +152,7 @@ Response codes use the high-bit convention: `response = command | 0x80`. Generic
 | CapabilityStatus | `0xA3` | Version (1) + NativeProtocolVersion (1) + BearerProfile (1) + EffectiveRole (1) + FeatureFlags (4) + SupportedTransports (2) + MaxLowRatePayloadBytes (2) + MaxQueueFrames (2) + OverrideFlags (1) + Reserved (1) |
 | OK | `0xF0` | - |
 | Error | `0xF1` | Error code (1) |
-| TxDone | `0xF8` | Result (1), optional DurationMs (4) + QueueLen (2) + QueueCapacity (2) |
+| TxDone | `0xF8` | Result (1), optional DurationMs (4) + QueueLen (2) + QueueCapacity (2) + scheduler diagnostics |
 | RxMeta | `0xF9` | SNR (1) + RSSI (1) |
 
 ### Error Codes
@@ -173,7 +173,7 @@ Response codes use the high-bit convention: `response = command | 0x80`. Generic
 
 The TNC sends these SetHardware frames without a preceding request:
 
-**TxDone (0xF8)**: Sent after a packet has been transmitted. Legacy payloads contain a single byte: 0x01 for success, 0x00 for failure. Extended payloads append TX duration in milliseconds and queue occupancy.
+**TxDone (0xF8)**: Sent after a packet has been transmitted. Legacy payloads contain a single byte: 0x01 for success, 0x00 for failure. Extended payloads append TX duration, queue occupancy, point-in-time defer state, and optional scheduler drop counters.
 
 **RxMeta (0xF9)**: Sent immediately after each standard data frame (type 0x00) with metadata for the received packet. Contains SNR (1 byte, signed, value x4 for 0.25 dB precision) followed by RSSI (1 byte, signed, dBm). Enabled by default; can be toggled with SetSignalReport. Standard KISS clients ignore this frame.
 
@@ -197,7 +197,7 @@ All values little-endian.
 | Version | 1 byte | Firmware version |
 | Reserved | 1 byte | Always 0 |
 
-Version `3` adds extended `Stats` and `TxDone` telemetry while retaining compatibility with legacy host parsers. Version `4` adds Cinder `CapabilityStatus` so hosts can gate protocol features on firmware-declared support instead of static board assumptions. Versions `5` through `7` add the Cinder bench priority queue, scheduler guard/defer diagnostics, and queued-airtime/drop telemetry. Version `8` adds low-priority/data backpressure before the four-frame queue reaches full scale.
+Version `3` adds extended `Stats` and `TxDone` telemetry while retaining compatibility with legacy host parsers. Version `4` adds Cinder `CapabilityStatus` so hosts can gate protocol features on firmware-declared support instead of static board assumptions. Versions `5` through `7` add the Cinder bench priority queue, scheduler guard/defer diagnostics, and queued-airtime/drop telemetry. Version `8` adds low-priority/data backpressure before the four-frame queue reaches full scale. Version `9` keeps scheduler defer and drop reasons separated in `TxDone` telemetry.
 
 ### CapabilityStatus (CapabilityStatus response)
 
@@ -253,7 +253,7 @@ All values little-endian.
 | QueueLen | 2 bytes | Optional pending TX queue depth |
 | QueueCapacity | 2 bytes | Optional TX queue capacity |
 | SchedulerDelayMs | 4 bytes | Optional next scheduler/admission delay |
-| SchedulerDeferReason | 1 byte | Optional scheduler defer/drop reason |
+| SchedulerDeferReason | 1 byte | Optional current scheduler defer reason |
 | TxState | 1 byte | Optional scheduler TX state |
 | SchedulerQueuedAirtimeMs | 4 bytes | Optional currently queued firmware-estimated airtime |
 | SchedulerAirtimeBudgetMs | 4 bytes | Optional queued-airtime budget |
@@ -273,9 +273,11 @@ All multi-byte values are little-endian.
 | QueueLen | 2 bytes | Optional pending TX queue depth after completion |
 | QueueCapacity | 2 bytes | Optional TX queue capacity |
 | SchedulerDelayMs | 4 bytes | Optional next scheduler/admission delay |
-| SchedulerDeferReason | 1 byte | Optional scheduler defer/drop reason |
+| SchedulerDeferReason | 1 byte | Optional current post-TX scheduler defer reason |
+| SchedulerDropCount | 4 bytes | Optional cumulative scheduler rejects/drops |
+| SchedulerLastDropReason | 1 byte | Optional last scheduler drop reason |
 
-Hosts should continue to accept the legacy one-byte payload. The extended fields are intended for bench observability and route-pressure feedback.
+Hosts should continue to accept the legacy one-byte payload. Firmware `0900` and later append drop counters after the defer fields so a successful TX no longer inherits an unrelated `backpressure` or `queue-full` reason from a later rejected frame.
 
 ### Battery (Battery response)
 

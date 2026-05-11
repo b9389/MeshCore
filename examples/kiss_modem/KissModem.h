@@ -91,7 +91,7 @@
 #define HW_ERR_TX_QUEUE_FULL     0x08
 #define HW_ERR_TX_BACKPRESSURE   0x09
 
-#define KISS_FIRMWARE_VERSION 8
+#define KISS_FIRMWARE_VERSION 9
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -242,6 +242,7 @@ class KissModem {
   bool queuedAirtimeWouldFit(uint32_t additional_airtime_ms) const;
   bool shouldBackpressureTx(uint8_t priority, uint32_t additional_airtime_ms) const;
   uint8_t getTxRejectErrorCode() const;
+  uint8_t getTxDoneDeferReason(uint32_t next_tx_delay_ms) const;
   uint32_t getRemainingTxAdmissionDelayMs(uint32_t now_ms) const;
   uint32_t getSchedulerDelayMs(uint32_t now_ms) const;
   void setLastDefer(uint8_t reason, uint32_t delay_ms);

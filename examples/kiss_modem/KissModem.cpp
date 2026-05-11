@@ -410,6 +410,12 @@ uint8_t KissModem::getTxRejectErrorCode() const {
   return HW_ERR_TX_QUEUE_FULL;
 }
 
+uint8_t KissModem::getTxDoneDeferReason(uint32_t next_tx_delay_ms) const {
+  if (_tx_queue_len == 0) return SCHED_DEFER_NONE;
+  if (next_tx_delay_ms > 0) return SCHED_DEFER_CHANNEL_GUARD;
+  return _last_defer_reason;
+}
+
 uint32_t KissModem::getRemainingTxAdmissionDelayMs(uint32_t now_ms) const {
   if (_next_tx_allowed_ms == 0) return 0;
   if ((int32_t)(_next_tx_allowed_ms - now_ms) <= 0) return 0;
@@ -431,7 +437,6 @@ void KissModem::setLastDefer(uint8_t reason, uint32_t delay_ms) {
 void KissModem::recordTxDrop(uint8_t reason) {
   _tx_drop_count++;
   _last_drop_reason = reason;
-  setLastDefer(reason, 0);
 }
 
 void KissModem::processTx() {
@@ -529,7 +534,7 @@ void KissModem::processTx() {
         _next_tx_allowed_ms = finished_ms + KISS_TX_CHANNEL_GUARD_MS;
         popQueuedTx();
         uint32_t next_tx_delay_ms = getRemainingTxAdmissionDelayMs(finished_ms);
-        uint8_t tx_done[14];
+        uint8_t tx_done[19];
         tx_done[0] = 0x01;
         memcpy(tx_done + 1, &_last_tx_duration_ms, 4);
         uint16_t queue_len = _tx_queue_len;
@@ -537,7 +542,9 @@ void KissModem::processTx() {
         memcpy(tx_done + 5, &queue_len, 2);
         memcpy(tx_done + 7, &queue_capacity, 2);
         memcpy(tx_done + 9, &next_tx_delay_ms, 4);
-        tx_done[13] = _last_defer_reason;
+        tx_done[13] = getTxDoneDeferReason(next_tx_delay_ms);
+        memcpy(tx_done + 14, &_tx_drop_count, 4);
+        tx_done[18] = _last_drop_reason;
         writeHardwareFrame(HW_RESP_TX_DONE, tx_done, sizeof(tx_done));
         _tx_state = TX_IDLE;
       }
