@@ -113,6 +113,15 @@ static void renderDisplay(const char* detail_line = nullptr) {
           modem->getTxQueueCapacity(),
           (unsigned long)next_tx_delay_ms,
           modem->getLastDeferReasonLabel());
+    } else if (modem->getTxQueueLen() > 0) {
+      snprintf(
+          line,
+          sizeof(line),
+          "SCH Q%u/%u A%lu/%lu",
+          modem->getTxQueueLen(),
+          modem->getTxQueueCapacity(),
+          (unsigned long)modem->getQueuedAirtimeMs(),
+          (unsigned long)modem->getQueueAirtimeBudgetMs());
     } else {
       snprintf(
           line,

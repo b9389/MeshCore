@@ -28,6 +28,7 @@
 #define KISS_DEFAULT_PERSISTENCE 63
 #define KISS_DEFAULT_SLOTTIME    10
 #define KISS_TX_CHANNEL_GUARD_MS 1000UL
+#define KISS_TX_QUEUE_AIRTIME_BUDGET_MS 8000UL
 
 #define HW_CMD_GET_IDENTITY      0x01
 #define HW_CMD_GET_RANDOM        0x02
@@ -87,7 +88,7 @@
 #define HW_ERR_TX_INHIBITED      0x07
 #define HW_ERR_TX_QUEUE_FULL     0x08
 
-#define KISS_FIRMWARE_VERSION 6
+#define KISS_FIRMWARE_VERSION 7
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -95,6 +96,7 @@
 #define SCHED_DEFER_PERSISTENCE   0x03
 #define SCHED_DEFER_TX_INHIBIT    0x04
 #define SCHED_DEFER_QUEUE_FULL    0x05
+#define SCHED_DEFER_AIRTIME_FULL  0x06
 
 #define CAPABILITY_STATUS_VERSION 1
 #define CINDER_NATIVE_PROTOCOL_VERSION 1
@@ -165,6 +167,7 @@ struct TxQueueEntry {
   uint8_t data[KISS_MAX_PACKET_SIZE];
   uint16_t len;
   uint8_t priority;
+  uint32_t estimated_airtime_ms;
 };
 
 enum TxState {
@@ -191,6 +194,9 @@ class KissModem {
 
   TxQueueEntry _tx_queue[KISS_TX_QUEUE_CAPACITY];
   uint8_t _tx_queue_len;
+  uint32_t _queued_airtime_ms;
+  uint32_t _tx_drop_count;
+  uint8_t _last_drop_reason;
 
   uint8_t _txdelay;
   uint8_t _persistence;
@@ -228,9 +234,12 @@ class KissModem {
   void dropQueuedTxAt(uint8_t index);
   void popQueuedTx();
   void clearTxQueue();
+  bool evictLowerPriorityFor(uint8_t priority, uint8_t first_reorderable);
+  bool queuedAirtimeWouldFit(uint32_t additional_airtime_ms) const;
   uint32_t getRemainingTxAdmissionDelayMs(uint32_t now_ms) const;
   uint32_t getSchedulerDelayMs(uint32_t now_ms) const;
   void setLastDefer(uint8_t reason, uint32_t delay_ms);
+  void recordTxDrop(uint8_t reason);
 
   void handleGetIdentity();
   void handleGetRandom(const uint8_t* data, uint16_t len);
@@ -296,6 +305,8 @@ public:
   bool isActuallyTransmitting() const { return _tx_state == TX_SENDING; }
   uint8_t getTxQueueLen() const { return _tx_queue_len; }
   uint8_t getTxQueueCapacity() const { return KISS_TX_QUEUE_CAPACITY; }
+  uint32_t getQueuedAirtimeMs() const { return _queued_airtime_ms; }
+  uint32_t getQueueAirtimeBudgetMs() const { return KISS_TX_QUEUE_AIRTIME_BUDGET_MS; }
   uint32_t getNextTxDelayMs() const { return getRemainingTxAdmissionDelayMs(millis()); }
   uint32_t getSchedulerDelayMs() const { return getSchedulerDelayMs(millis()); }
   uint8_t getLastDeferReason() const { return _last_defer_reason; }
