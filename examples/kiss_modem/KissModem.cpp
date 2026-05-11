@@ -305,13 +305,13 @@ uint8_t KissModem::getTxPriority(const uint8_t* data, uint16_t len) const {
       case 0x07: /* Route request */
       case 0x08: /* Route reply */
       case 0x09: /* Capability status */
-        return 1;
+        return KISS_TX_CONTROL_PRIORITY_MAX;
       default:
         break;
     }
   }
 
-  return 2;
+  return KISS_TX_DATA_PRIORITY;
 }
 
 bool KissModem::enqueueTx(const uint8_t* data, uint16_t len) {
@@ -321,7 +321,7 @@ bool KissModem::enqueueTx(const uint8_t* data, uint16_t len) {
   uint32_t estimated_airtime_ms = _radio.getEstAirtimeFor(len);
   uint8_t first_reorderable = (_tx_state == TX_SENDING) ? 1 : 0;
 
-  if (shouldBackpressureTx(priority, estimated_airtime_ms)) {
+  if (shouldBackpressureTx(priority, estimated_airtime_ms, first_reorderable)) {
     recordTxDrop(SCHED_DEFER_BACKPRESSURE);
     return false;
   }
@@ -396,11 +396,27 @@ bool KissModem::queuedAirtimeWouldFit(uint32_t additional_airtime_ms) const {
   return _queued_airtime_ms <= KISS_TX_QUEUE_AIRTIME_BUDGET_MS - additional_airtime_ms;
 }
 
-bool KissModem::shouldBackpressureTx(uint8_t priority, uint32_t additional_airtime_ms) const {
-  if (priority < 2) return false;
-  if (_tx_queue_len >= KISS_TX_DATA_QUEUE_HIGH_WATERMARK) return true;
-  if (additional_airtime_ms > KISS_TX_DATA_AIRTIME_HIGH_WATERMARK_MS) return false;
-  return _queued_airtime_ms > KISS_TX_DATA_AIRTIME_HIGH_WATERMARK_MS - additional_airtime_ms;
+bool KissModem::hasQueuedControlFrame(uint8_t first_reorderable) const {
+  for (uint8_t i = first_reorderable; i < _tx_queue_len; i++) {
+    if (_tx_queue[i].priority <= KISS_TX_CONTROL_PRIORITY_MAX) return true;
+  }
+  return false;
+}
+
+bool KissModem::shouldBackpressureTx(uint8_t priority, uint32_t additional_airtime_ms,
+    uint8_t first_reorderable) const {
+  if (priority < KISS_TX_DATA_PRIORITY) return false;
+
+  uint8_t queue_high_watermark = KISS_TX_DATA_QUEUE_HIGH_WATERMARK;
+  uint32_t airtime_high_watermark_ms = KISS_TX_DATA_AIRTIME_HIGH_WATERMARK_MS;
+  if (hasQueuedControlFrame(first_reorderable)) {
+    queue_high_watermark = KISS_TX_CONTROL_WAIT_DATA_QUEUE_HIGH_WATERMARK;
+    airtime_high_watermark_ms = KISS_TX_CONTROL_WAIT_DATA_AIRTIME_HIGH_WATERMARK_MS;
+  }
+
+  if (_tx_queue_len >= queue_high_watermark) return true;
+  if (additional_airtime_ms > airtime_high_watermark_ms) return false;
+  return _queued_airtime_ms > airtime_high_watermark_ms - additional_airtime_ms;
 }
 
 uint8_t KissModem::getTxRejectErrorCode() const {

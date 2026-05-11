@@ -31,6 +31,10 @@
 #define KISS_TX_QUEUE_AIRTIME_BUDGET_MS 8000UL
 #define KISS_TX_DATA_QUEUE_HIGH_WATERMARK 3
 #define KISS_TX_DATA_AIRTIME_HIGH_WATERMARK_MS 4000UL
+#define KISS_TX_CONTROL_WAIT_DATA_QUEUE_HIGH_WATERMARK 2
+#define KISS_TX_CONTROL_WAIT_DATA_AIRTIME_HIGH_WATERMARK_MS 2600UL
+#define KISS_TX_CONTROL_PRIORITY_MAX 1
+#define KISS_TX_DATA_PRIORITY 2
 
 #define HW_CMD_GET_IDENTITY      0x01
 #define HW_CMD_GET_RANDOM        0x02
@@ -91,7 +95,7 @@
 #define HW_ERR_TX_QUEUE_FULL     0x08
 #define HW_ERR_TX_BACKPRESSURE   0x09
 
-#define KISS_FIRMWARE_VERSION 9
+#define KISS_FIRMWARE_VERSION 10
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -240,7 +244,9 @@ class KissModem {
   void clearTxQueue();
   bool evictLowerPriorityFor(uint8_t priority, uint8_t first_reorderable);
   bool queuedAirtimeWouldFit(uint32_t additional_airtime_ms) const;
-  bool shouldBackpressureTx(uint8_t priority, uint32_t additional_airtime_ms) const;
+  bool hasQueuedControlFrame(uint8_t first_reorderable) const;
+  bool shouldBackpressureTx(uint8_t priority, uint32_t additional_airtime_ms,
+      uint8_t first_reorderable) const;
   uint8_t getTxRejectErrorCode() const;
   uint8_t getTxDoneDeferReason(uint32_t next_tx_delay_ms) const;
   uint32_t getRemainingTxAdmissionDelayMs(uint32_t now_ms) const;

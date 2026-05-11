@@ -197,7 +197,7 @@ All values little-endian.
 | Version | 1 byte | Firmware version |
 | Reserved | 1 byte | Always 0 |
 
-Version `3` adds extended `Stats` and `TxDone` telemetry while retaining compatibility with legacy host parsers. Version `4` adds Cinder `CapabilityStatus` so hosts can gate protocol features on firmware-declared support instead of static board assumptions. Versions `5` through `7` add the Cinder bench priority queue, scheduler guard/defer diagnostics, and queued-airtime/drop telemetry. Version `8` adds low-priority/data backpressure before the four-frame queue reaches full scale. Version `9` keeps scheduler defer and drop reasons separated in `TxDone` telemetry.
+Version `3` adds extended `Stats` and `TxDone` telemetry while retaining compatibility with legacy host parsers. Version `4` adds Cinder `CapabilityStatus` so hosts can gate protocol features on firmware-declared support instead of static board assumptions. Versions `5` through `7` add the Cinder bench priority queue, scheduler guard/defer diagnostics, and queued-airtime/drop telemetry. Version `8` adds low-priority/data backpressure before the four-frame queue reaches full scale. Version `9` keeps scheduler defer and drop reasons separated in `TxDone` telemetry. Version `10` tightens data backpressure when ACK, route, advert, or capability control traffic is already queued so low-rate data cannot consume control headroom during overload.
 
 ### CapabilityStatus (CapabilityStatus response)
 
@@ -278,6 +278,19 @@ All multi-byte values are little-endian.
 | SchedulerLastDropReason | 1 byte | Optional last scheduler drop reason |
 
 Hosts should continue to accept the legacy one-byte payload. Firmware `0900` and later append drop counters after the defer fields so a successful TX no longer inherits an unrelated `backpressure` or `queue-full` reason from a later rejected frame.
+
+### Cinder Gateway Artifact Publish
+
+The Cinder gateway GUI firmware updater accepts ESP32-S3 app images built by PlatformIO. Publish a build artifact from this checkout with:
+
+```bash
+python3 scripts/publish_cinder_firmware.py \
+  --gateway http://10.0.0.68:9080 \
+  --env Heltec_v3_kiss_modem \
+  --build
+```
+
+The script reads `KISS_FIRMWARE_VERSION`, converts it to the existing display version format such as `0A00`, uploads `.pio/build/<env>/firmware.bin`, and records the current git commit in the gateway artifact manifest. The gateway updater writes only the ESP32 app image at offset `0x10000`; bootloader and partition updates remain manual.
 
 ### Battery (Battery response)
 
