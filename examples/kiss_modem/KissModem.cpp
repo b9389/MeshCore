@@ -16,7 +16,10 @@ KissModem::KissModem(Stream& serial, mesh::LocalIdentity& identity, mesh::RNG& r
   _tx_state = TX_IDLE;
   _tx_timer = 0;
   _tx_started_ms = 0;
+  _next_tx_allowed_ms = 0;
   _last_tx_duration_ms = 0;
+  _last_defer_delay_ms = 0;
+  _last_defer_reason = SCHED_DEFER_NONE;
   _setRadioCallback = nullptr;
   _setTxPowerCallback = nullptr;
   _getCurrentRssiCallback = nullptr;
@@ -35,8 +38,12 @@ void KissModem::begin() {
   _rx_active = false;
   clearTxQueue();
   _tx_state = TX_IDLE;
+  _tx_timer = 0;
   _tx_started_ms = 0;
+  _next_tx_allowed_ms = 0;
   _last_tx_duration_ms = 0;
+  _last_defer_delay_ms = 0;
+  _last_defer_reason = SCHED_DEFER_NONE;
   purgeExpiredOverrides();
 }
 
@@ -316,7 +323,10 @@ bool KissModem::enqueueTx(const uint8_t* data, uint16_t len) {
         break;
       }
     }
-    if (evict_index < 0) return false;
+    if (evict_index < 0) {
+      setLastDefer(SCHED_DEFER_QUEUE_FULL, 0);
+      return false;
+    }
     dropQueuedTxAt((uint8_t)evict_index);
   }
 
@@ -352,11 +362,30 @@ void KissModem::clearTxQueue() {
   _tx_queue_len = 0;
 }
 
+uint32_t KissModem::getRemainingTxAdmissionDelayMs(uint32_t now_ms) const {
+  if (_next_tx_allowed_ms == 0) return 0;
+  if ((int32_t)(_next_tx_allowed_ms - now_ms) <= 0) return 0;
+  return _next_tx_allowed_ms - now_ms;
+}
+
+uint32_t KissModem::getSchedulerDelayMs(uint32_t now_ms) const {
+  uint32_t admission_delay_ms = getRemainingTxAdmissionDelayMs(now_ms);
+  if (admission_delay_ms > 0) return admission_delay_ms;
+  if (_last_defer_reason == SCHED_DEFER_NONE) return 0;
+  return _last_defer_delay_ms;
+}
+
+void KissModem::setLastDefer(uint8_t reason, uint32_t delay_ms) {
+  _last_defer_reason = reason;
+  _last_defer_delay_ms = delay_ms;
+}
+
 void KissModem::processTx() {
   purgeExpiredOverrides();
   if (_tx_queue_len > 0 && _tx_state != TX_SENDING && isOverrideActive(OVERRIDE_KIND_TX_INHIBIT)) {
     clearTxQueue();
     _tx_state = TX_IDLE;
+    setLastDefer(SCHED_DEFER_TX_INHIBIT, 0);
     writeHardwareError(HW_ERR_TX_INHIBITED);
     return;
   }
@@ -364,6 +393,13 @@ void KissModem::processTx() {
   switch (_tx_state) {
     case TX_IDLE:
       if (_tx_queue_len > 0) {
+        uint32_t admission_delay_ms = getRemainingTxAdmissionDelayMs(millis());
+        if (admission_delay_ms > 0) {
+          setLastDefer(SCHED_DEFER_CHANNEL_GUARD, admission_delay_ms);
+          _tx_state = TX_ADMISSION_WAIT;
+          break;
+        }
+        setLastDefer(SCHED_DEFER_NONE, 0);
         if (_fullduplex) {
           _tx_timer = millis();
           _tx_state = TX_DELAY;
@@ -373,17 +409,42 @@ void KissModem::processTx() {
       }
       break;
 
+    case TX_ADMISSION_WAIT:
+      if (_tx_queue_len == 0) {
+        _tx_state = TX_IDLE;
+        break;
+      }
+      {
+        uint32_t admission_delay_ms = getRemainingTxAdmissionDelayMs(millis());
+        if (admission_delay_ms > 0) {
+          setLastDefer(SCHED_DEFER_CHANNEL_GUARD, admission_delay_ms);
+          break;
+        }
+      }
+      setLastDefer(SCHED_DEFER_NONE, 0);
+      if (_fullduplex) {
+        _tx_timer = millis();
+        _tx_state = TX_DELAY;
+      } else {
+        _tx_state = TX_WAIT_CLEAR;
+      }
+      break;
+
     case TX_WAIT_CLEAR:
       if (!_radio.isReceiving()) {
         uint8_t rand_val;
         _rng.random(&rand_val, 1);
         if (rand_val <= _persistence) {
+          setLastDefer(SCHED_DEFER_NONE, 0);
           _tx_timer = millis();
           _tx_state = TX_DELAY;
         } else {
+          setLastDefer(SCHED_DEFER_PERSISTENCE, (uint32_t)_slottime * 10);
           _tx_timer = millis();
           _tx_state = TX_SLOT_WAIT;
         }
+      } else {
+        setLastDefer(SCHED_DEFER_CHANNEL_BUSY, (uint32_t)_slottime * 10);
       }
       break;
 
@@ -397,6 +458,7 @@ void KissModem::processTx() {
       if (millis() - _tx_timer >= (uint32_t)_txdelay * 10) {
         _tx_started_ms = millis();
         if (_tx_queue_len > 0) {
+          setLastDefer(SCHED_DEFER_NONE, 0);
           _radio.startSendRaw(_tx_queue[0].data, _tx_queue[0].len);
           _tx_state = TX_SENDING;
         } else {
@@ -408,15 +470,20 @@ void KissModem::processTx() {
     case TX_SENDING:
       if (_radio.isSendComplete()) {
         _radio.onSendFinished();
-        _last_tx_duration_ms = millis() - _tx_started_ms;
+        uint32_t finished_ms = millis();
+        _last_tx_duration_ms = finished_ms - _tx_started_ms;
+        _next_tx_allowed_ms = finished_ms + KISS_TX_CHANNEL_GUARD_MS;
         popQueuedTx();
-        uint8_t tx_done[9];
+        uint32_t next_tx_delay_ms = getRemainingTxAdmissionDelayMs(finished_ms);
+        uint8_t tx_done[14];
         tx_done[0] = 0x01;
         memcpy(tx_done + 1, &_last_tx_duration_ms, 4);
         uint16_t queue_len = _tx_queue_len;
         uint16_t queue_capacity = KISS_TX_QUEUE_CAPACITY;
         memcpy(tx_done + 5, &queue_len, 2);
         memcpy(tx_done + 7, &queue_capacity, 2);
+        memcpy(tx_done + 9, &next_tx_delay_ms, 4);
+        tx_done[13] = _last_defer_reason;
         writeHardwareFrame(HW_RESP_TX_DONE, tx_done, sizeof(tx_done));
         _tx_state = TX_IDLE;
       }
@@ -635,14 +702,18 @@ void KissModem::handleGetStats() {
 
   uint32_t rx, tx, errors;
   _getStatsCallback(&rx, &tx, &errors);
-  uint8_t buf[16];
+  uint8_t buf[22];
   uint16_t queue_len = _tx_queue_len;
   uint16_t queue_capacity = KISS_TX_QUEUE_CAPACITY;
+  uint32_t next_tx_delay_ms = getSchedulerDelayMs();
   memcpy(buf, &rx, 4);
   memcpy(buf + 4, &tx, 4);
   memcpy(buf + 8, &errors, 4);
   memcpy(buf + 12, &queue_len, 2);
   memcpy(buf + 14, &queue_capacity, 2);
+  memcpy(buf + 16, &next_tx_delay_ms, 4);
+  buf[20] = _last_defer_reason;
+  buf[21] = (uint8_t)_tx_state;
   writeHardwareFrame(HW_RESP(HW_CMD_GET_STATS), buf, sizeof(buf));
 }
 
@@ -996,5 +1067,24 @@ const char* KissModem::getEffectiveRoleLabel() const {
       return "RELAY";
     default:
       return "AUTO";
+  }
+}
+
+const char* KissModem::getLastDeferReasonLabel() const {
+  switch (_last_defer_reason) {
+    case SCHED_DEFER_NONE:
+      return "none";
+    case SCHED_DEFER_CHANNEL_GUARD:
+      return "guard";
+    case SCHED_DEFER_CHANNEL_BUSY:
+      return "busy";
+    case SCHED_DEFER_PERSISTENCE:
+      return "persist";
+    case SCHED_DEFER_TX_INHIBIT:
+      return "tx-inh";
+    case SCHED_DEFER_QUEUE_FULL:
+      return "q-full";
+    default:
+      return "unknown";
   }
 }

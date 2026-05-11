@@ -27,6 +27,7 @@
 #define KISS_DEFAULT_TXDELAY     50
 #define KISS_DEFAULT_PERSISTENCE 63
 #define KISS_DEFAULT_SLOTTIME    10
+#define KISS_TX_CHANNEL_GUARD_MS 1000UL
 
 #define HW_CMD_GET_IDENTITY      0x01
 #define HW_CMD_GET_RANDOM        0x02
@@ -86,7 +87,14 @@
 #define HW_ERR_TX_INHIBITED      0x07
 #define HW_ERR_TX_QUEUE_FULL     0x08
 
-#define KISS_FIRMWARE_VERSION 5
+#define KISS_FIRMWARE_VERSION 6
+
+#define SCHED_DEFER_NONE          0x00
+#define SCHED_DEFER_CHANNEL_GUARD 0x01
+#define SCHED_DEFER_CHANNEL_BUSY  0x02
+#define SCHED_DEFER_PERSISTENCE   0x03
+#define SCHED_DEFER_TX_INHIBIT    0x04
+#define SCHED_DEFER_QUEUE_FULL    0x05
 
 #define CAPABILITY_STATUS_VERSION 1
 #define CINDER_NATIVE_PROTOCOL_VERSION 1
@@ -161,6 +169,7 @@ struct TxQueueEntry {
 
 enum TxState {
   TX_IDLE,
+  TX_ADMISSION_WAIT,
   TX_WAIT_CLEAR,
   TX_SLOT_WAIT,
   TX_DELAY,
@@ -192,7 +201,10 @@ class KissModem {
   TxState _tx_state;
   uint32_t _tx_timer;
   uint32_t _tx_started_ms;
+  uint32_t _next_tx_allowed_ms;
   uint32_t _last_tx_duration_ms;
+  uint32_t _last_defer_delay_ms;
+  uint8_t _last_defer_reason;
 
   SetRadioCallback _setRadioCallback;
   SetTxPowerCallback _setTxPowerCallback;
@@ -216,6 +228,9 @@ class KissModem {
   void dropQueuedTxAt(uint8_t index);
   void popQueuedTx();
   void clearTxQueue();
+  uint32_t getRemainingTxAdmissionDelayMs(uint32_t now_ms) const;
+  uint32_t getSchedulerDelayMs(uint32_t now_ms) const;
+  void setLastDefer(uint8_t reason, uint32_t delay_ms);
 
   void handleGetIdentity();
   void handleGetRandom(const uint8_t* data, uint16_t len);
@@ -281,6 +296,10 @@ public:
   bool isActuallyTransmitting() const { return _tx_state == TX_SENDING; }
   uint8_t getTxQueueLen() const { return _tx_queue_len; }
   uint8_t getTxQueueCapacity() const { return KISS_TX_QUEUE_CAPACITY; }
+  uint32_t getNextTxDelayMs() const { return getRemainingTxAdmissionDelayMs(millis()); }
+  uint32_t getSchedulerDelayMs() const { return getSchedulerDelayMs(millis()); }
+  uint8_t getLastDeferReason() const { return _last_defer_reason; }
+  const char* getLastDeferReasonLabel() const;
   bool isTxInhibited() const { return isOverrideActive(OVERRIDE_KIND_TX_INHIBIT); }
   bool isQuietMode() const { return isOverrideActive(OVERRIDE_KIND_QUIET_MODE); }
   uint8_t getOverrideFlags() const { return getOverrideFlagMask(); }
