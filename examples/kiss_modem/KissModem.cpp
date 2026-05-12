@@ -25,6 +25,7 @@ KissModem::KissModem(Stream& serial, mesh::LocalIdentity& identity, mesh::RNG& r
   _last_admission_delay_ms = 0;
   _last_admission_reason = SCHED_DEFER_NONE;
   _data_congestion_score = 0;
+  _next_congestion_decay_ms = 0;
   _admission_feedback_success_count = 0;
   _admission_feedback_failure_count = 0;
   _last_admission_feedback = 0;
@@ -74,6 +75,7 @@ void KissModem::begin() {
   _last_admission_delay_ms = 0;
   _last_admission_reason = SCHED_DEFER_NONE;
   _data_congestion_score = 0;
+  _next_congestion_decay_ms = millis() + KISS_TX_DATA_CONGESTION_DECAY_INTERVAL_MS;
   _admission_feedback_success_count = 0;
   _admission_feedback_failure_count = 0;
   _last_admission_feedback = 0;
@@ -117,6 +119,7 @@ void KissModem::writeHardwareError(uint8_t error_code) {
 
 void KissModem::loop() {
   purgeExpiredOverrides();
+  decayDataCongestionScore(millis());
 
   while (_serial.available()) {
     uint8_t b = _serial.read();
@@ -500,6 +503,7 @@ uint32_t KissModem::randomDataBusyBackoffMs(uint32_t estimated_airtime_ms) {
 
 uint32_t KissModem::getAdaptiveDataAdmissionBackoffMinMs(uint32_t estimated_airtime_ms) const {
   uint32_t min_ms = KISS_TX_DATA_ADMISSION_BACKOFF_MIN_MS;
+  if (estimated_airtime_ms > min_ms) min_ms = estimated_airtime_ms;
   uint32_t score_floor_ms = (estimated_airtime_ms / 4) * _data_congestion_score;
   if (score_floor_ms > min_ms) min_ms = score_floor_ms;
   if (min_ms > KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS) {
@@ -540,6 +544,22 @@ uint32_t KissModem::getAdaptiveDataBusyBackoffMaxMs(uint32_t estimated_airtime_m
   return max_ms;
 }
 
+void KissModem::decayDataCongestionScore(uint32_t now_ms) {
+  if (_next_congestion_decay_ms == 0) {
+    _next_congestion_decay_ms = now_ms + KISS_TX_DATA_CONGESTION_DECAY_INTERVAL_MS;
+    return;
+  }
+  if (_data_congestion_score == 0) {
+    _next_congestion_decay_ms = now_ms + KISS_TX_DATA_CONGESTION_DECAY_INTERVAL_MS;
+    return;
+  }
+  while (_data_congestion_score > 0 &&
+      (int32_t)(now_ms - _next_congestion_decay_ms) >= 0) {
+    _data_congestion_score--;
+    _next_congestion_decay_ms += KISS_TX_DATA_CONGESTION_DECAY_INTERVAL_MS;
+  }
+}
+
 void KissModem::increaseDataCongestionScore(uint8_t amount) {
   if (amount == 0) return;
   if (_data_congestion_score > KISS_TX_DATA_CONGESTION_SCORE_MAX - amount) {
@@ -547,10 +567,14 @@ void KissModem::increaseDataCongestionScore(uint8_t amount) {
   } else {
     _data_congestion_score += amount;
   }
+  _next_congestion_decay_ms = millis() + KISS_TX_DATA_CONGESTION_DECAY_INTERVAL_MS;
 }
 
 void KissModem::decreaseDataCongestionScore() {
   if (_data_congestion_score > 0) _data_congestion_score--;
+  if (_data_congestion_score == 0) {
+    _next_congestion_decay_ms = millis() + KISS_TX_DATA_CONGESTION_DECAY_INTERVAL_MS;
+  }
 }
 
 uint32_t KissModem::getRemainingChannelGuardDelayMs(uint32_t now_ms) const {
@@ -599,7 +623,7 @@ void KissModem::recordAdmissionEvent(uint8_t reason, uint32_t delay_ms) {
 
 uint32_t KissModem::applyBusyBackoffToHead(uint32_t now_ms) {
   if (_tx_queue_len == 0 || !headTxIsData()) return (uint32_t)_slottime * 10;
-  increaseDataCongestionScore(2);
+  increaseDataCongestionScore(1);
   uint32_t backoff_ms = randomDataBusyBackoffMs(_tx_queue[0].estimated_airtime_ms);
   uint32_t release_at_ms = now_ms + backoff_ms;
   if ((int32_t)(release_at_ms - _tx_queue[0].release_at_ms) > 0) {
@@ -618,7 +642,7 @@ void KissModem::recordTxDrop(uint8_t reason) {
   if (reason == SCHED_DEFER_BACKPRESSURE ||
       reason == SCHED_DEFER_QUEUE_FULL ||
       reason == SCHED_DEFER_AIRTIME_FULL) {
-    increaseDataCongestionScore(3);
+    increaseDataCongestionScore(2);
   }
   _tx_drop_count++;
   _last_drop_reason = reason;
@@ -641,6 +665,7 @@ void KissModem::resetAdmissionState() {
   _last_admission_delay_ms = 0;
   _last_admission_reason = SCHED_DEFER_NONE;
   _data_congestion_score = 0;
+  _next_congestion_decay_ms = millis() + KISS_TX_DATA_CONGESTION_DECAY_INTERVAL_MS;
   _admission_feedback_success_count = 0;
   _admission_feedback_failure_count = 0;
   _last_admission_feedback = 0;
@@ -1185,7 +1210,7 @@ void KissModem::handleAdmissionFeedback(const uint8_t* data, uint16_t len) {
       break;
     case ADMISSION_FEEDBACK_LOST:
       _admission_feedback_failure_count++;
-      increaseDataCongestionScore(2);
+      increaseDataCongestionScore(1);
       writeHardwareFrame(HW_RESP_OK, nullptr, 0);
       break;
     case ADMISSION_FEEDBACK_ACK_TIMEOUT:
