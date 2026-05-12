@@ -24,7 +24,9 @@ KissModem::KissModem(Stream& serial, mesh::LocalIdentity& identity, mesh::RNG& r
   _admission_reject_count = 0;
   _last_admission_delay_ms = 0;
   _last_admission_reason = SCHED_DEFER_NONE;
-  _data_congestion_score = 0;
+  _interactive_congestion_score = 0;
+  _telemetry_congestion_score = 0;
+  _bulk_congestion_score = 0;
   _next_congestion_decay_ms = 0;
   _admission_feedback_success_count = 0;
   _admission_feedback_failure_count = 0;
@@ -86,7 +88,9 @@ void KissModem::begin() {
   _admission_reject_count = 0;
   _last_admission_delay_ms = 0;
   _last_admission_reason = SCHED_DEFER_NONE;
-  _data_congestion_score = 0;
+  _interactive_congestion_score = 0;
+  _telemetry_congestion_score = 0;
+  _bulk_congestion_score = 0;
   resetAdmissionConfig();
   _next_congestion_decay_ms = millis() + _data_congestion_decay_interval_ms;
   _admission_feedback_success_count = 0;
@@ -408,20 +412,20 @@ bool KissModem::enqueueTx(const uint8_t* data, uint16_t len) {
   uint32_t release_at_ms = millis();
 
   if (shouldBackpressureTx(priority, estimated_airtime_ms, first_reorderable)) {
-    recordTxDrop(SCHED_DEFER_BACKPRESSURE);
+    recordTxDrop(SCHED_DEFER_BACKPRESSURE, priority);
     return false;
   }
 
   if (_tx_queue_len >= KISS_TX_QUEUE_CAPACITY) {
     if (!evictLowerPriorityFor(priority, first_reorderable)) {
-      recordTxDrop(SCHED_DEFER_QUEUE_FULL);
+      recordTxDrop(SCHED_DEFER_QUEUE_FULL, priority);
       return false;
     }
   }
 
   while (!queuedAirtimeWouldFit(estimated_airtime_ms)) {
     if (!evictLowerPriorityFor(priority, first_reorderable)) {
-      recordTxDrop(SCHED_DEFER_AIRTIME_FULL);
+      recordTxDrop(SCHED_DEFER_AIRTIME_FULL, priority);
       return false;
     }
   }
@@ -620,6 +624,18 @@ void KissModem::decreaseFeedbackPressureForPriority(uint8_t priority, uint8_t am
   else *pressure = 0;
 }
 
+uint8_t KissModem::getCongestionScoreForPriority(uint8_t priority) const {
+  if (priority >= KISS_TX_BULK_PRIORITY) return _bulk_congestion_score;
+  if (priority >= KISS_TX_TELEMETRY_PRIORITY) return _telemetry_congestion_score;
+  return _interactive_congestion_score;
+}
+
+bool KissModem::hasCongestionScore() const {
+  return _interactive_congestion_score > 0 ||
+      _telemetry_congestion_score > 0 ||
+      _bulk_congestion_score > 0;
+}
+
 uint32_t KissModem::randomDelayMs(uint32_t min_ms, uint32_t max_ms) {
   if (max_ms <= min_ms) return min_ms;
   uint16_t random_value = 0;
@@ -704,7 +720,8 @@ uint32_t KissModem::getAdaptiveDataAdmissionBackoffMinMs(
     uint32_t telemetry_floor_ms = scaledAirtimeMs(estimated_airtime_ms, 2);
     if (telemetry_floor_ms > min_ms) min_ms = telemetry_floor_ms;
   }
-  uint32_t score_floor_ms = (estimated_airtime_ms / 4) * _data_congestion_score;
+  uint8_t congestion_score = getCongestionScoreForPriority(priority);
+  uint32_t score_floor_ms = (estimated_airtime_ms / 4) * congestion_score;
   if (score_floor_ms > min_ms) min_ms = score_floor_ms;
   uint8_t feedback_pressure = getFeedbackPressureForPriority(priority);
   if (feedback_pressure > 0 && min_ms < KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS) {
@@ -728,7 +745,8 @@ uint32_t KissModem::getAdaptiveDataAdmissionBackoffMaxMs(
   uint32_t max_ms = getClassAdmissionBaseMaxMs(priority, estimated_airtime_ms);
 
   uint8_t feedback_pressure = getFeedbackPressureForPriority(priority);
-  uint32_t score_extension_ms = estimated_airtime_ms * _data_congestion_score;
+  uint8_t congestion_score = getCongestionScoreForPriority(priority);
+  uint32_t score_extension_ms = estimated_airtime_ms * congestion_score;
   uint32_t feedback_extension_ms = estimated_airtime_ms * feedback_pressure;
   if (priority >= KISS_TX_TELEMETRY_PRIORITY) {
     feedback_extension_ms = scaledAirtimeMs(estimated_airtime_ms, feedback_pressure + 1);
@@ -764,7 +782,8 @@ uint32_t KissModem::getAdaptiveDataBusyBackoffMaxMs(
   }
 
   uint8_t feedback_pressure = getFeedbackPressureForPriority(priority);
-  uint32_t score_extension_ms = (estimated_airtime_ms / 2) * _data_congestion_score;
+  uint8_t congestion_score = getCongestionScoreForPriority(priority);
+  uint32_t score_extension_ms = (estimated_airtime_ms / 2) * congestion_score;
   uint32_t feedback_extension_ms = (estimated_airtime_ms / 2) * feedback_pressure;
   if (priority >= KISS_TX_TELEMETRY_PRIORITY) {
     feedback_extension_ms = estimated_airtime_ms * feedback_pressure;
@@ -805,30 +824,39 @@ void KissModem::decayDataCongestionScore(uint32_t now_ms) {
     _next_congestion_decay_ms = now_ms + _data_congestion_decay_interval_ms;
     return;
   }
-  if (_data_congestion_score == 0) {
+  if (!hasCongestionScore()) {
     _next_congestion_decay_ms = now_ms + _data_congestion_decay_interval_ms;
     return;
   }
-  while (_data_congestion_score > 0 &&
-      (int32_t)(now_ms - _next_congestion_decay_ms) >= 0) {
-    _data_congestion_score--;
+  while (hasCongestionScore() && (int32_t)(now_ms - _next_congestion_decay_ms) >= 0) {
+    if (_interactive_congestion_score > 0) _interactive_congestion_score--;
+    if (_telemetry_congestion_score > 0) _telemetry_congestion_score--;
+    if (_bulk_congestion_score > 0) _bulk_congestion_score--;
     _next_congestion_decay_ms += _data_congestion_decay_interval_ms;
   }
 }
 
-void KissModem::increaseDataCongestionScore(uint8_t amount) {
+void KissModem::increaseDataCongestionScoreForPriority(uint8_t priority, uint8_t amount) {
   if (amount == 0) return;
-  if (_data_congestion_score > KISS_TX_DATA_CONGESTION_SCORE_MAX - amount) {
-    _data_congestion_score = KISS_TX_DATA_CONGESTION_SCORE_MAX;
+  uint8_t* score = &_interactive_congestion_score;
+  if (priority >= KISS_TX_BULK_PRIORITY) score = &_bulk_congestion_score;
+  else if (priority >= KISS_TX_TELEMETRY_PRIORITY) score = &_telemetry_congestion_score;
+
+  if (*score > KISS_TX_DATA_CONGESTION_SCORE_MAX - amount) {
+    *score = KISS_TX_DATA_CONGESTION_SCORE_MAX;
   } else {
-    _data_congestion_score += amount;
+    *score += amount;
   }
   _next_congestion_decay_ms = millis() + _data_congestion_decay_interval_ms;
 }
 
-void KissModem::decreaseDataCongestionScore() {
-  if (_data_congestion_score > 0) _data_congestion_score--;
-  if (_data_congestion_score == 0) {
+void KissModem::decreaseDataCongestionScoreForPriority(uint8_t priority) {
+  uint8_t* score = &_interactive_congestion_score;
+  if (priority >= KISS_TX_BULK_PRIORITY) score = &_bulk_congestion_score;
+  else if (priority >= KISS_TX_TELEMETRY_PRIORITY) score = &_telemetry_congestion_score;
+
+  if (*score > 0) *score -= 1;
+  if (!hasCongestionScore()) {
     _next_congestion_decay_ms = millis() + _data_congestion_decay_interval_ms;
   }
 }
@@ -905,7 +933,7 @@ void KissModem::recordAdmissionEvent(uint8_t reason, uint32_t delay_ms) {
 
 uint32_t KissModem::applyBusyBackoffToHead(uint32_t now_ms) {
   if (_tx_queue_len == 0 || !headTxIsData()) return (uint32_t)_slottime * 10;
-  increaseDataCongestionScore(1);
+  increaseDataCongestionScoreForPriority(_tx_queue[0].priority, 1);
   uint32_t backoff_ms = randomDataBusyBackoffMs(
       _tx_queue[0].priority, _tx_queue[0].estimated_airtime_ms);
   uint32_t release_at_ms = now_ms + backoff_ms;
@@ -921,11 +949,11 @@ void KissModem::setLastDefer(uint8_t reason, uint32_t delay_ms) {
   _last_defer_delay_ms = delay_ms;
 }
 
-void KissModem::recordTxDrop(uint8_t reason) {
+void KissModem::recordTxDrop(uint8_t reason, uint8_t priority) {
   if (reason == SCHED_DEFER_BACKPRESSURE ||
       reason == SCHED_DEFER_QUEUE_FULL ||
       reason == SCHED_DEFER_AIRTIME_FULL) {
-    increaseDataCongestionScore(2);
+    increaseDataCongestionScoreForPriority(priority, 2);
   }
   _tx_drop_count++;
   _last_drop_reason = reason;
@@ -958,7 +986,9 @@ void KissModem::resetAdmissionState() {
   _admission_reject_count = 0;
   _last_admission_delay_ms = 0;
   _last_admission_reason = SCHED_DEFER_NONE;
-  _data_congestion_score = 0;
+  _interactive_congestion_score = 0;
+  _telemetry_congestion_score = 0;
+  _bulk_congestion_score = 0;
   _next_congestion_decay_ms = millis() + _data_congestion_decay_interval_ms;
   _admission_feedback_success_count = 0;
   _admission_feedback_failure_count = 0;
@@ -1107,7 +1137,7 @@ void KissModem::processTx() {
         if (sent_data_frame && sent_has_message_id) {
           rememberSentDataFeedback(sent_message_id, sent_priority);
         }
-        if (sent_data_frame) decreaseDataCongestionScore();
+        if (sent_data_frame) decreaseDataCongestionScoreForPriority(sent_priority);
         _tx_state = TX_IDLE;
       }
       break;
@@ -1374,7 +1404,7 @@ void KissModem::handleGetStats() {
   memcpy(buf + 51, &_admission_reject_count, 4);
   memcpy(buf + 55, &_last_admission_delay_ms, 4);
   buf[59] = _last_admission_reason;
-  buf[60] = _data_congestion_score;
+  buf[60] = getCongestionScoreForPriority(KISS_TX_DATA_PRIORITY);
   memcpy(buf + 61, &admission_window_min_ms, 4);
   memcpy(buf + 65, &admission_window_max_ms, 4);
   memcpy(buf + 69, &busy_window_max_ms, 4);
@@ -1543,25 +1573,25 @@ void KissModem::handleAdmissionFeedback(const uint8_t* data, uint16_t len) {
     case ADMISSION_FEEDBACK_DELIVERED:
       _admission_feedback_success_count++;
       decreaseFeedbackPressureForPriority(feedback_priority, 1);
-      decreaseDataCongestionScore();
+      decreaseDataCongestionScoreForPriority(feedback_priority);
       writeHardwareFrame(HW_RESP_OK, nullptr, 0);
       break;
     case ADMISSION_FEEDBACK_ACKED:
       _admission_feedback_success_count++;
       decreaseFeedbackPressureForPriority(feedback_priority, 2);
-      decreaseDataCongestionScore();
+      decreaseDataCongestionScoreForPriority(feedback_priority);
       writeHardwareFrame(HW_RESP_OK, nullptr, 0);
       break;
     case ADMISSION_FEEDBACK_LOST:
       _admission_feedback_failure_count++;
       increaseFeedbackPressureForPriority(feedback_priority, 1);
-      increaseDataCongestionScore(1);
+      increaseDataCongestionScoreForPriority(feedback_priority, 1);
       writeHardwareFrame(HW_RESP_OK, nullptr, 0);
       break;
     case ADMISSION_FEEDBACK_ACK_TIMEOUT:
       _admission_feedback_failure_count++;
       increaseFeedbackPressureForPriority(feedback_priority, 1);
-      increaseDataCongestionScore(1);
+      increaseDataCongestionScoreForPriority(feedback_priority, 1);
       writeHardwareFrame(HW_RESP_OK, nullptr, 0);
       break;
     default:

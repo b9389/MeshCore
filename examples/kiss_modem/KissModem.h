@@ -129,7 +129,7 @@
 #define HW_ERR_TX_BACKPRESSURE   0x09
 #define HW_ERR_BUSY              0x0A
 
-#define KISS_FIRMWARE_VERSION 26
+#define KISS_FIRMWARE_VERSION 27
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -280,7 +280,9 @@ class KissModem {
   uint32_t _admission_reject_count;
   uint32_t _last_admission_delay_ms;
   uint8_t _last_admission_reason;
-  uint8_t _data_congestion_score;
+  uint8_t _interactive_congestion_score;
+  uint8_t _telemetry_congestion_score;
+  uint8_t _bulk_congestion_score;
   uint32_t _next_congestion_decay_ms;
   uint32_t _admission_feedback_success_count;
   uint32_t _admission_feedback_failure_count;
@@ -358,6 +360,8 @@ class KissModem {
   uint8_t getFeedbackPressureMaxForPriority(uint8_t priority) const;
   void increaseFeedbackPressureForPriority(uint8_t priority, uint8_t amount);
   void decreaseFeedbackPressureForPriority(uint8_t priority, uint8_t amount);
+  uint8_t getCongestionScoreForPriority(uint8_t priority) const;
+  bool hasCongestionScore() const;
   uint32_t randomDelayMs(uint32_t min_ms, uint32_t max_ms);
   uint32_t randomDataAdmissionBackoffMs(uint8_t priority, uint32_t estimated_airtime_ms);
   uint32_t randomDataBusyBackoffMs(uint8_t priority, uint32_t estimated_airtime_ms);
@@ -371,8 +375,8 @@ class KissModem {
   uint32_t getAdaptiveDataBusyBackoffMaxMs(uint8_t priority, uint32_t estimated_airtime_ms) const;
   uint32_t getObservedRxGuardMs(uint32_t estimated_airtime_ms) const;
   void decayDataCongestionScore(uint32_t now_ms);
-  void increaseDataCongestionScore(uint8_t amount);
-  void decreaseDataCongestionScore();
+  void increaseDataCongestionScoreForPriority(uint8_t priority, uint8_t amount);
+  void decreaseDataCongestionScoreForPriority(uint8_t priority);
   uint32_t getRemainingChannelGuardDelayMs(uint32_t now_ms) const;
   uint32_t getRemainingHeadReleaseDelayMs(uint32_t now_ms) const;
   uint32_t getRemainingAckTurnProtectDelayMs(uint32_t now_ms) const;
@@ -384,7 +388,7 @@ class KissModem {
   void recordAdmissionEvent(uint8_t reason, uint32_t delay_ms);
   uint32_t applyBusyBackoffToHead(uint32_t now_ms);
   void setLastDefer(uint8_t reason, uint32_t delay_ms);
-  void recordTxDrop(uint8_t reason);
+  void recordTxDrop(uint8_t reason, uint8_t priority);
   void resetAdmissionConfig();
   void resetAdmissionState();
 
