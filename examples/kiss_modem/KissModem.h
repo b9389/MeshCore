@@ -28,10 +28,10 @@
 #define KISS_DEFAULT_PERSISTENCE 63
 #define KISS_DEFAULT_SLOTTIME    10
 #define KISS_TX_CHANNEL_GUARD_MS 1000UL
-#define KISS_TX_OBSERVED_RX_GUARD_MIN_MS 250UL
-#define KISS_TX_OBSERVED_RX_GUARD_MAX_MS 2000UL
+#define KISS_TX_OBSERVED_RX_GUARD_MIN_MS 0UL
+#define KISS_TX_OBSERVED_RX_GUARD_MAX_MS 0UL
 #define KISS_TX_OBSERVED_RX_GUARD_CAP_MS 6000UL
-#define KISS_TX_OBSERVED_RX_GUARD_PERCENT 50UL
+#define KISS_TX_OBSERVED_RX_GUARD_PERCENT 0UL
 #define KISS_TX_OBSERVED_RX_GUARD_PERCENT_CAP 200UL
 #define KISS_TX_QUEUE_AIRTIME_BUDGET_MS 8000UL
 #define KISS_TX_DATA_QUEUE_HIGH_WATERMARK 3
@@ -118,7 +118,7 @@
 #define HW_ERR_TX_BACKPRESSURE   0x09
 #define HW_ERR_BUSY              0x0A
 
-#define KISS_FIRMWARE_VERSION 20
+#define KISS_FIRMWARE_VERSION 21
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -319,6 +319,7 @@ class KissModem {
   void decreaseDataCongestionScore();
   uint32_t getRemainingChannelGuardDelayMs(uint32_t now_ms) const;
   uint32_t getRemainingHeadReleaseDelayMs(uint32_t now_ms) const;
+  uint32_t getRemainingObservedRxBiasMs(uint32_t now_ms) const;
   uint32_t getRemainingObservedRxGuardDelayMs(uint32_t now_ms) const;
   uint8_t getTxAdmissionDelayReason(uint32_t now_ms) const;
   uint32_t getRemainingTxAdmissionDelayMs(uint32_t now_ms) const;

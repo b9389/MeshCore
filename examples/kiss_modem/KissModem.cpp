@@ -523,6 +523,12 @@ uint32_t KissModem::getAdaptiveDataAdmissionBackoffMinMs(uint32_t estimated_airt
   if (min_ms > KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS) {
     min_ms = KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS;
   }
+  uint32_t observed_rx_bias_ms = getRemainingObservedRxBiasMs(millis());
+  if (observed_rx_bias_ms > 0 && min_ms < KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS) {
+    uint32_t remaining_ms = KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS - min_ms;
+    if (observed_rx_bias_ms > remaining_ms) min_ms = KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS;
+    else min_ms += observed_rx_bias_ms;
+  }
   return min_ms;
 }
 
@@ -619,24 +625,22 @@ uint32_t KissModem::getRemainingHeadReleaseDelayMs(uint32_t now_ms) const {
   return _tx_queue[0].release_at_ms - now_ms;
 }
 
-uint32_t KissModem::getRemainingObservedRxGuardDelayMs(uint32_t now_ms) const {
-  if (!headTxIsData()) return 0;
+uint32_t KissModem::getRemainingObservedRxBiasMs(uint32_t now_ms) const {
   if (_observed_rx_guard_until_ms == 0) return 0;
   if ((int32_t)(_observed_rx_guard_until_ms - now_ms) <= 0) return 0;
   return _observed_rx_guard_until_ms - now_ms;
 }
 
+uint32_t KissModem::getRemainingObservedRxGuardDelayMs(uint32_t now_ms) const {
+  if (!headTxIsData()) return 0;
+  return getRemainingObservedRxBiasMs(now_ms);
+}
+
 uint8_t KissModem::getTxAdmissionDelayReason(uint32_t now_ms) const {
   uint32_t guard_delay_ms = getRemainingChannelGuardDelayMs(now_ms);
   uint32_t release_delay_ms = getRemainingHeadReleaseDelayMs(now_ms);
-  uint32_t observed_rx_delay_ms = getRemainingObservedRxGuardDelayMs(now_ms);
-  if (release_delay_ms > 0 &&
-      release_delay_ms >= guard_delay_ms &&
-      release_delay_ms >= observed_rx_delay_ms) {
+  if (release_delay_ms > 0 && release_delay_ms >= guard_delay_ms) {
     return SCHED_DEFER_RANDOM_BACKOFF;
-  }
-  if (observed_rx_delay_ms > 0 && observed_rx_delay_ms >= guard_delay_ms) {
-    return SCHED_DEFER_OBSERVED_RX;
   }
   if (guard_delay_ms > 0) return SCHED_DEFER_CHANNEL_GUARD;
   return SCHED_DEFER_NONE;
@@ -645,9 +649,7 @@ uint8_t KissModem::getTxAdmissionDelayReason(uint32_t now_ms) const {
 uint32_t KissModem::getRemainingTxAdmissionDelayMs(uint32_t now_ms) const {
   uint32_t guard_delay_ms = getRemainingChannelGuardDelayMs(now_ms);
   uint32_t release_delay_ms = getRemainingHeadReleaseDelayMs(now_ms);
-  uint32_t observed_rx_delay_ms = getRemainingObservedRxGuardDelayMs(now_ms);
-  uint32_t delay_ms = guard_delay_ms > release_delay_ms ? guard_delay_ms : release_delay_ms;
-  return delay_ms > observed_rx_delay_ms ? delay_ms : observed_rx_delay_ms;
+  return guard_delay_ms > release_delay_ms ? guard_delay_ms : release_delay_ms;
 }
 
 uint32_t KissModem::getSchedulerDelayMs(uint32_t now_ms) const {
@@ -1085,7 +1087,7 @@ void KissModem::handleGetStats() {
   uint16_t queue_capacity = KISS_TX_QUEUE_CAPACITY;
   uint32_t next_tx_delay_ms = getSchedulerDelayMs();
   uint32_t airtime_budget_ms = KISS_TX_QUEUE_AIRTIME_BUDGET_MS;
-  uint32_t observed_rx_guard_delay_ms = getRemainingObservedRxGuardDelayMs(millis());
+  uint32_t observed_rx_guard_delay_ms = getRemainingObservedRxBiasMs(millis());
   uint32_t admission_reference_airtime_ms = _radio.getEstAirtimeFor(KISS_TX_ADMISSION_WINDOW_REFERENCE_BYTES);
   uint32_t admission_window_min_ms =
       getAdaptiveDataAdmissionBackoffMinMs(admission_reference_airtime_ms);
