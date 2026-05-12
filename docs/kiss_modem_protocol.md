@@ -79,6 +79,8 @@ Firmware `1000` keeps the wire format stable but changes data-admission policy. 
 
 Firmware `1100` widens the zero-score data-admission contention window to the existing `8000 ms` cap. This is intentionally conservative for max-payload LoRa tests; it should reduce clustered first transmissions from independent nodes before adding any explicit neighbor coordination.
 
+Firmware `1200` adds runtime admission configuration. Hosts can set and read the firmware's data-admission window, busy-retreat window, and congestion-score decay interval without reflashing. The command is intended for bench sweeps and gateway-driven policy experiments; firmware still enforces hard caps and only accepts changes while idle.
+
 In full-duplex mode, CSMA is bypassed and packets transmit after TXDELAY.
 
 ## SetHardware Extensions (0x06)
@@ -132,6 +134,8 @@ MeshCore-specific functionality uses the standard KISS SetHardware command. The 
 | GetCapabilityStatus | `0x46` | - |
 | ReportAdmissionFeedback | `0x47` | Outcome (1), optional MessageId (8) |
 | ResetAdmissionState | `0x48` | - |
+| SetAdmissionConfig | `0x49` | AdmissionConfigV1 (21) |
+| GetAdmissionConfig | `0x4A` | - |
 
 ### Response Sub-commands (TNC to Host)
 
@@ -164,6 +168,8 @@ Response codes use the high-bit convention: `response = command | 0x80`. Generic
 | OverrideStatus | `0xA0` | Version (1) + Flags (1) + ActiveCount (1) + EffectiveRole (1) + LastReason (1) + NextTtlMs (4) |
 | EffectivePolicy | `0xA2` | Same payload as OverrideStatus |
 | CapabilityStatus | `0xA3` | Version (1) + NativeProtocolVersion (1) + BearerProfile (1) + EffectiveRole (1) + FeatureFlags (4) + SupportedTransports (2) + MaxLowRatePayloadBytes (2) + MaxQueueFrames (2) + OverrideFlags (1) + Reserved (1) |
+| AdmissionConfigSet | `0xC9` | AdmissionConfigV1 (21) |
+| AdmissionConfig | `0xCA` | AdmissionConfigV1 (21) |
 | OK | `0xF0` | - |
 | Error | `0xF1` | Error code (1) |
 | TxDone | `0xF8` | Result (1), optional DurationMs (4) + QueueLen (2) + QueueCapacity (2) + scheduler diagnostics |
@@ -212,7 +218,7 @@ All values little-endian.
 | Version | 1 byte | Firmware version |
 | Reserved | 1 byte | Always 0 |
 
-Version `3` adds extended `Stats` and `TxDone` telemetry while retaining compatibility with legacy host parsers. Version `4` adds Cinder `CapabilityStatus` so hosts can gate protocol features on firmware-declared support instead of static board assumptions. Versions `5` through `7` add the Cinder bench priority queue, scheduler guard/defer diagnostics, and queued-airtime/drop telemetry. Version `8` adds low-priority/data backpressure before the four-frame queue reaches full scale. Version `9` keeps scheduler defer and drop reasons separated in `TxDone` telemetry. Version `10` tightens data backpressure when ACK, route, advert, or capability control traffic is already queued so low-rate data cannot consume control headroom during overload. Version `11` (`0B00`) adds randomized data admission/backoff and admission counters. Version `12` (`0C00`) fixes startup TX-power reporting. Version `13` (`0D00`) adds adaptive local data-admission congestion scoring and optional stats fields for the current admission windows. Version `14` (`0E00`) adds host-reported admission feedback for delivered, ACKed, lost, and ACK-timeout outcomes. Version `15` (`0F00`) adds deterministic admission-state reset for repeatable stress runs. Version `16` (`1000`) tunes board-local data admission with an airtime-floor release window, timed score decay, and gentler congestion scoring. Version `17` (`1100`) widens the base data contention window to `1303-8000 ms` for the current max-payload profile.
+Version `3` adds extended `Stats` and `TxDone` telemetry while retaining compatibility with legacy host parsers. Version `4` adds Cinder `CapabilityStatus` so hosts can gate protocol features on firmware-declared support instead of static board assumptions. Versions `5` through `7` add the Cinder bench priority queue, scheduler guard/defer diagnostics, and queued-airtime/drop telemetry. Version `8` adds low-priority/data backpressure before the four-frame queue reaches full scale. Version `9` keeps scheduler defer and drop reasons separated in `TxDone` telemetry. Version `10` tightens data backpressure when ACK, route, advert, or capability control traffic is already queued so low-rate data cannot consume control headroom during overload. Version `11` (`0B00`) adds randomized data admission/backoff and admission counters. Version `12` (`0C00`) fixes startup TX-power reporting. Version `13` (`0D00`) adds adaptive local data-admission congestion scoring and optional stats fields for the current admission windows. Version `14` (`0E00`) adds host-reported admission feedback for delivered, ACKed, lost, and ACK-timeout outcomes. Version `15` (`0F00`) adds deterministic admission-state reset for repeatable stress runs. Version `16` (`1000`) tunes board-local data admission with an airtime-floor release window, timed score decay, and gentler congestion scoring. Version `17` (`1100`) widens the base data contention window to `1303-8000 ms` for the current max-payload profile. Version `18` (`1200`) adds runtime admission configuration.
 
 ### CapabilityStatus (CapabilityStatus response)
 
@@ -224,7 +230,7 @@ All multi-byte values are little-endian. This is a firmware control-plane status
 | NativeProtocolVersion | 1 byte | Cinder native protocol version supported by this firmware, currently `1` |
 | BearerProfile | 1 byte | `0x02` = KISS bench bearer |
 | EffectiveRole | 1 byte | `0x00` auto, `0x01` leaf, `0x02` relay, `0x03` quiet |
-| FeatureFlags | 4 bytes | Cinder capability bitset; current firmware sets override control, firmware diagnostics, admission feedback, and admission reset |
+| FeatureFlags | 4 bytes | Cinder capability bitset; current firmware sets override control, firmware diagnostics, admission feedback, admission reset, and admission config |
 | SupportedTransports | 2 bytes | Cinder transport bitmask; current firmware sets LoRa and serial |
 | MaxLowRatePayloadBytes | 2 bytes | Current Cinder low-rate payload target, `192` bytes |
 | MaxQueueFrames | 2 bytes | Firmware TX queue capacity, currently `4` |
@@ -308,6 +314,19 @@ Firmware `0F00` clears benchmark-facing admission state while preserving RX/TX/e
 |-------|------|-------------|
 | - | - | Empty payload |
 
+### AdmissionConfig (commands `0x49` / `0x4A`)
+
+Firmware `1200` accepts a fixed versioned payload for runtime admission tuning. `SetAdmissionConfig` resets admission counters and score after applying a valid idle-time config. It returns `Busy` if the TX path is not idle. `GetAdmissionConfig` returns the active config. Hard firmware caps still apply: data max `8000 ms`, busy max `6000 ms`, decay interval `1000..600000 ms`.
+
+| Field | Size | Description |
+|-------|------|-------------|
+| Version | 1 byte | Admission config payload version, currently `1` |
+| DataAdmissionMinMs | 4 bytes | Base randomized data-admission window minimum |
+| DataAdmissionMaxMs | 4 bytes | Base randomized data-admission window maximum |
+| BusyBackoffMinMs | 4 bytes | Busy-channel retreat window minimum |
+| BusyBackoffMaxMs | 4 bytes | Busy-channel retreat window maximum |
+| CongestionDecayIntervalMs | 4 bytes | Time between local congestion-score decay steps |
+
 ### TxDone (TxDone event)
 
 All multi-byte values are little-endian.
@@ -336,6 +355,8 @@ Firmware `0F00` does not change the `Stats` payload format; it adds `ResetAdmiss
 Firmware `1000` also leaves the `Stats` payload format unchanged. Hosts should interpret changed score/window trends as policy behavior, not as a new telemetry schema.
 
 Firmware `1100` also leaves the `Stats` payload format unchanged. The expected zero-score max-payload data window is `1303-8000 ms` with the current modem profile.
+
+Firmware `1200` also leaves the `Stats` payload format unchanged. Hosts should use `GetAdmissionConfig` to record the raw configured policy and `Stats` to record the effective score-weighted windows.
 
 ### Cinder Gateway Artifact Publish
 

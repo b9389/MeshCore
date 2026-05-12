@@ -44,6 +44,8 @@
 #define KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS 8000UL
 #define KISS_TX_DATA_BUSY_BACKOFF_CAP_MS 6000UL
 #define KISS_TX_ADMISSION_WINDOW_REFERENCE_BYTES 229
+#define KISS_ADMISSION_CONFIG_VERSION 1
+#define KISS_ADMISSION_CONFIG_PAYLOAD_LEN 21
 
 #define HW_CMD_GET_IDENTITY      0x01
 #define HW_CMD_GET_RANDOM        0x02
@@ -79,6 +81,8 @@
 #define HW_CMD_GET_CAPABILITY_STATUS     0x46
 #define HW_CMD_REPORT_ADMISSION_FEEDBACK 0x47
 #define HW_CMD_RESET_ADMISSION_STATE     0x48
+#define HW_CMD_SET_ADMISSION_CONFIG      0x49
+#define HW_CMD_GET_ADMISSION_CONFIG      0x4A
 
 /* Response code = command code | 0x80.  Generic / unsolicited use 0xF0+. */
 #define HW_RESP(cmd)             ((cmd) | 0x80)
@@ -107,7 +111,7 @@
 #define HW_ERR_TX_BACKPRESSURE   0x09
 #define HW_ERR_BUSY              0x0A
 
-#define KISS_FIRMWARE_VERSION 17
+#define KISS_FIRMWARE_VERSION 18
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -128,6 +132,7 @@
 #define CINDER_FEATURE_FIRMWARE_DIAGNOSTICS 0x00000040UL
 #define CINDER_FEATURE_ADMISSION_FEEDBACK  0x00000400UL
 #define CINDER_FEATURE_ADMISSION_RESET     0x00000800UL
+#define CINDER_FEATURE_ADMISSION_CONFIG    0x00001000UL
 #define CINDER_MAX_LOW_RATE_PAYLOAD_BYTES 192
 
 #define ADMISSION_FEEDBACK_DELIVERED   0x01
@@ -238,6 +243,11 @@ class KissModem {
   uint32_t _admission_feedback_success_count;
   uint32_t _admission_feedback_failure_count;
   uint8_t _last_admission_feedback;
+  uint32_t _data_admission_backoff_min_ms;
+  uint32_t _data_admission_backoff_max_ms;
+  uint32_t _data_busy_backoff_min_ms;
+  uint32_t _data_busy_backoff_max_ms;
+  uint32_t _data_congestion_decay_interval_ms;
 
   uint8_t _txdelay;
   uint8_t _persistence;
@@ -301,6 +311,7 @@ class KissModem {
   uint32_t applyBusyBackoffToHead(uint32_t now_ms);
   void setLastDefer(uint8_t reason, uint32_t delay_ms);
   void recordTxDrop(uint8_t reason);
+  void resetAdmissionConfig();
   void resetAdmissionState();
 
   void handleGetIdentity();
@@ -337,6 +348,8 @@ class KissModem {
   void handleGetCapabilityStatus();
   void handleAdmissionFeedback(const uint8_t* data, uint16_t len);
   void handleResetAdmissionState(const uint8_t* data, uint16_t len);
+  void handleSetAdmissionConfig(const uint8_t* data, uint16_t len);
+  void handleGetAdmissionConfig(const uint8_t* data, uint16_t len);
 
   void purgeExpiredOverrides();
   bool parseOverrideTlv(const uint8_t* data, uint16_t len, uint8_t* kind, uint8_t* value, uint32_t* ttl_ms);
@@ -350,6 +363,7 @@ class KissModem {
   uint32_t getNextOverrideTtlMs() const;
   void writeOverrideStatus(uint8_t response_subcommand);
   void writeCapabilityStatus();
+  void writeAdmissionConfig(uint8_t response_subcommand);
 
 public:
   KissModem(Stream& serial, mesh::LocalIdentity& identity, mesh::RNG& rng,
