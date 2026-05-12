@@ -83,7 +83,7 @@ Firmware `1200` adds runtime admission configuration. Hosts can set and read the
 
 Firmware `1300` adds the first board-local overheard-channel input. Each received packet records an observed RX guard for low-priority data admission; ACK/control traffic keeps priority bypass. This gives the scheduler a short post-RX quiet period based on real packets heard by the radio, not only local queued TX state.
 
-Firmware `1400` makes that observed-RX guard runtime-tunable through AdmissionConfig v2. Firmware `1500` keeps the same wire format but changes policy: observed RX no longer hard-blocks data. Instead, the active observed-RX window is added to the randomized data-admission floor, preserving ACK/control bypass while testing overheard traffic as a softer channel-busy bias. The default observed-RX bias is disabled (`0-0 ms @ 0%`) until a live sweep proves a better nonzero setting.
+Firmware `1400` makes that observed-RX guard runtime-tunable through AdmissionConfig v2. Firmware `1500` keeps the same wire format but changes policy: observed RX no longer hard-blocks data. Instead, the active observed-RX window is added to the randomized data-admission floor, preserving ACK/control bypass while testing overheard traffic as a softer channel-busy bias. Firmware `1600` changes the same v2 window into randomized observed-RX retreat: newly queued data may add randomized jitter while the window is active, and already queued data can be retimed when the board overhears another data packet. The default observed-RX behavior is disabled (`0-0 ms @ 0%`) until a live sweep proves a better nonzero setting.
 
 In full-duplex mode, CSMA is bypassed and packets transmit after TXDELAY.
 
@@ -222,7 +222,7 @@ All values little-endian.
 | Version | 1 byte | Firmware version |
 | Reserved | 1 byte | Always 0 |
 
-Version `3` adds extended `Stats` and `TxDone` telemetry while retaining compatibility with legacy host parsers. Version `4` adds Cinder `CapabilityStatus` so hosts can gate protocol features on firmware-declared support instead of static board assumptions. Versions `5` through `7` add the Cinder bench priority queue, scheduler guard/defer diagnostics, and queued-airtime/drop telemetry. Version `8` adds low-priority/data backpressure before the four-frame queue reaches full scale. Version `9` keeps scheduler defer and drop reasons separated in `TxDone` telemetry. Version `10` tightens data backpressure when ACK, route, advert, or capability control traffic is already queued so low-rate data cannot consume control headroom during overload. Version `11` (`0B00`) adds randomized data admission/backoff and admission counters. Version `12` (`0C00`) fixes startup TX-power reporting. Version `13` (`0D00`) adds adaptive local data-admission congestion scoring and optional stats fields for the current admission windows. Version `14` (`0E00`) adds host-reported admission feedback for delivered, ACKed, lost, and ACK-timeout outcomes. Version `15` (`0F00`) adds deterministic admission-state reset for repeatable stress runs. Version `16` (`1000`) tunes board-local data admission with an airtime-floor release window, timed score decay, and gentler congestion scoring. Version `17` (`1100`) widens the base data contention window to `1303-8000 ms` for the current max-payload profile. Version `18` (`1200`) adds runtime admission configuration. Version `19` (`1300`) adds observed-RX data guard telemetry and admission defer reason `observed-rx`. Version `20` (`1400`) makes the observed-RX guard runtime tunable through AdmissionConfig v2. Version `21` (`1500`) changes observed RX from a hard post-RX delay into a randomized admission-window bias.
+Version `3` adds extended `Stats` and `TxDone` telemetry while retaining compatibility with legacy host parsers. Version `4` adds Cinder `CapabilityStatus` so hosts can gate protocol features on firmware-declared support instead of static board assumptions. Versions `5` through `7` add the Cinder bench priority queue, scheduler guard/defer diagnostics, and queued-airtime/drop telemetry. Version `8` adds low-priority/data backpressure before the four-frame queue reaches full scale. Version `9` keeps scheduler defer and drop reasons separated in `TxDone` telemetry. Version `10` tightens data backpressure when ACK, route, advert, or capability control traffic is already queued so low-rate data cannot consume control headroom during overload. Version `11` (`0B00`) adds randomized data admission/backoff and admission counters. Version `12` (`0C00`) fixes startup TX-power reporting. Version `13` (`0D00`) adds adaptive local data-admission congestion scoring and optional stats fields for the current admission windows. Version `14` (`0E00`) adds host-reported admission feedback for delivered, ACKed, lost, and ACK-timeout outcomes. Version `15` (`0F00`) adds deterministic admission-state reset for repeatable stress runs. Version `16` (`1000`) tunes board-local data admission with an airtime-floor release window, timed score decay, and gentler congestion scoring. Version `17` (`1100`) widens the base data-admission contention window to `1303-8000 ms` for the current max-payload profile. Version `18` (`1200`) adds runtime admission configuration. Version `19` (`1300`) adds observed-RX data guard telemetry and admission defer reason `observed-rx`. Version `20` (`1400`) makes the observed-RX guard runtime tunable through AdmissionConfig v2. Version `21` (`1500`) changes observed RX from a hard post-RX delay into a randomized admission-window bias. Version `22` (`1600`) changes observed RX into randomized queued-data retreat and appends observed-RX retreat counters to `Stats`.
 
 ### CapabilityStatus (CapabilityStatus response)
 
@@ -301,6 +301,8 @@ All values little-endian.
 | ObservedRxCount | 4 bytes | Optional cumulative packets that updated the observed-RX guard |
 | ObservedRxGuardDelayMs | 4 bytes | Optional current remaining data-only observed-RX guard delay |
 | LastObservedRxAirtimeMs | 4 bytes | Optional firmware-estimated airtime of the last observed RX packet |
+| ObservedRxRetreatCount | 4 bytes | Optional cumulative data-admission retreats caused by an active observed-RX window |
+| LastObservedRxRetreatMs | 4 bytes | Optional last randomized observed-RX retreat applied to new or queued data |
 
 The current Cinder bench KISS modem uses a four-frame priority TX queue. Hosts should continue to accept the legacy 12-byte payload without queue fields.
 
@@ -323,7 +325,7 @@ Firmware `0F00` clears benchmark-facing admission state while preserving RX/TX/e
 
 ### AdmissionConfig (commands `0x49` / `0x4A`)
 
-Firmware `1200` accepts a fixed versioned payload for runtime admission tuning. Firmware `1400` extends that payload to v2 with observed-RX guard controls while still accepting v1 set requests. Firmware `1500` preserves the v2 payload but uses the observed-RX values as an admission-window bias instead of a hard scheduler guard. `SetAdmissionConfig` resets admission counters and score after applying a valid idle-time config. It returns `Busy` if the TX path is not idle. `GetAdmissionConfig` returns the active config. Hard firmware caps still apply: data max `8000 ms`, busy max `6000 ms`, decay interval `1000..600000 ms`, observed-RX guard max `6000 ms`, and observed-RX guard percent `0..200`.
+Firmware `1200` accepts a fixed versioned payload for runtime admission tuning. Firmware `1400` extends that payload to v2 with observed-RX guard controls while still accepting v1 set requests. Firmware `1500` preserves the v2 payload but uses the observed-RX values as an admission-window bias instead of a hard scheduler guard. Firmware `1600` keeps v2 and uses the same observed-RX values as a randomized retreat window for data admission. `SetAdmissionConfig` resets admission counters and score after applying a valid idle-time config. It returns `Busy` if the TX path is not idle. `GetAdmissionConfig` returns the active config. Hard firmware caps still apply: data max `8000 ms`, busy max `6000 ms`, decay interval `1000..600000 ms`, observed-RX guard max `6000 ms`, and observed-RX guard percent `0..200`.
 
 | Field | Size | Description |
 |-------|------|-------------|
@@ -333,9 +335,9 @@ Firmware `1200` accepts a fixed versioned payload for runtime admission tuning. 
 | BusyBackoffMinMs | 4 bytes | Busy-channel retreat window minimum |
 | BusyBackoffMaxMs | 4 bytes | Busy-channel retreat window maximum |
 | CongestionDecayIntervalMs | 4 bytes | Time between local congestion-score decay steps |
-| ObservedRxGuardMinMs | 4 bytes | v2 only: minimum observed-RX data admission bias; firmware `1400` used this as hard quiet time |
-| ObservedRxGuardMaxMs | 4 bytes | v2 only: maximum observed-RX data admission bias; use `0` with percent `0` to disable the observed-RX bias |
-| ObservedRxGuardPercent | 4 bytes | v2 only: percent of estimated observed packet airtime to use before min/max clamping; `0` disables the observed-RX bias |
+| ObservedRxGuardMinMs | 4 bytes | v2 only: minimum observed-RX data admission window; firmware `1400` used this as hard quiet time and firmware `1500` used it as bias |
+| ObservedRxGuardMaxMs | 4 bytes | v2 only: maximum observed-RX data admission window; use `0` with percent `0` to disable observed-RX admission effects |
+| ObservedRxGuardPercent | 4 bytes | v2 only: percent of estimated observed packet airtime to use before min/max clamping; `0` disables observed-RX admission effects |
 
 ### TxDone (TxDone event)
 
@@ -371,6 +373,8 @@ Firmware `1200` also leaves the `Stats` payload format unchanged. Hosts should u
 Firmware `1400` keeps the `Stats` payload format from `1300` and extends `AdmissionConfig` to v2. Hosts can use `ObservedRxGuardPercent=0` plus `ObservedRxGuardMinMs=0` and `ObservedRxGuardMaxMs=0` to disable the post-RX guard for A/B testing without reflashing.
 
 Firmware `1500` keeps the same `Stats` and `AdmissionConfig` payloads. The `ObservedRxGuardDelayMs` stats field reports the active observed-RX bias window, but that value is no longer a direct scheduler delay; it is folded into the randomized data-admission floor for newly queued data frames.
+
+Firmware `1600` appends `ObservedRxRetreatCount` and `LastObservedRxRetreatMs` to `Stats`. `ObservedRxGuardDelayMs` still reports the active observed-RX window, but the primary scheduler action is randomized retreat for low-priority data either at enqueue time or when already queued data overhears another data packet.
 
 ### Cinder Gateway Artifact Publish
 

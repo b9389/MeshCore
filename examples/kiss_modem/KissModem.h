@@ -118,7 +118,7 @@
 #define HW_ERR_TX_BACKPRESSURE   0x09
 #define HW_ERR_BUSY              0x0A
 
-#define KISS_FIRMWARE_VERSION 21
+#define KISS_FIRMWARE_VERSION 22
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -261,7 +261,10 @@ class KissModem {
   uint32_t _observed_rx_guard_percent;
   uint32_t _observed_rx_count;
   uint32_t _observed_rx_guard_until_ms;
+  uint8_t _observed_rx_guard_priority;
   uint32_t _last_observed_rx_airtime_ms;
+  uint32_t _observed_rx_retreat_count;
+  uint32_t _last_observed_rx_retreat_ms;
 
   uint8_t _txdelay;
   uint8_t _persistence;
@@ -310,6 +313,9 @@ class KissModem {
   uint32_t randomDelayMs(uint32_t min_ms, uint32_t max_ms);
   uint32_t randomDataAdmissionBackoffMs(uint32_t estimated_airtime_ms);
   uint32_t randomDataBusyBackoffMs(uint32_t estimated_airtime_ms);
+  uint32_t randomObservedRxRetreatMs(uint32_t now_ms);
+  void recordObservedRxRetreat(uint32_t retreat_ms);
+  void applyObservedRxQueueRetreat(uint32_t now_ms, uint8_t observed_priority);
   uint32_t getAdaptiveDataAdmissionBackoffMinMs(uint32_t estimated_airtime_ms) const;
   uint32_t getAdaptiveDataAdmissionBackoffMaxMs(uint32_t estimated_airtime_ms) const;
   uint32_t getAdaptiveDataBusyBackoffMaxMs(uint32_t estimated_airtime_ms) const;

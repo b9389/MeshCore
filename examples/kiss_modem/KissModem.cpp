@@ -32,7 +32,10 @@ KissModem::KissModem(Stream& serial, mesh::LocalIdentity& identity, mesh::RNG& r
   resetAdmissionConfig();
   _observed_rx_count = 0;
   _observed_rx_guard_until_ms = 0;
+  _observed_rx_guard_priority = KISS_TX_DATA_PRIORITY;
   _last_observed_rx_airtime_ms = 0;
+  _observed_rx_retreat_count = 0;
+  _last_observed_rx_retreat_ms = 0;
   _txdelay = KISS_DEFAULT_TXDELAY;
   _persistence = KISS_DEFAULT_PERSISTENCE;
   _slottime = KISS_DEFAULT_SLOTTIME;
@@ -86,7 +89,10 @@ void KissModem::begin() {
   _last_admission_feedback = 0;
   _observed_rx_count = 0;
   _observed_rx_guard_until_ms = 0;
+  _observed_rx_guard_priority = KISS_TX_DATA_PRIORITY;
   _last_observed_rx_airtime_ms = 0;
+  _observed_rx_retreat_count = 0;
+  _last_observed_rx_retreat_ms = 0;
   purgeExpiredOverrides();
 }
 
@@ -506,13 +512,46 @@ uint32_t KissModem::randomDelayMs(uint32_t min_ms, uint32_t max_ms) {
 uint32_t KissModem::randomDataAdmissionBackoffMs(uint32_t estimated_airtime_ms) {
   uint32_t min_ms = getAdaptiveDataAdmissionBackoffMinMs(estimated_airtime_ms);
   uint32_t max_ms = getAdaptiveDataAdmissionBackoffMaxMs(estimated_airtime_ms);
-  return randomDelayMs(min_ms, max_ms);
+  uint32_t backoff_ms = randomDelayMs(min_ms, max_ms);
+  uint32_t retreat_ms = randomObservedRxRetreatMs(millis());
+  if (retreat_ms == 0 || backoff_ms >= KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS) {
+    return backoff_ms;
+  }
+  uint32_t remaining_ms = KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS - backoff_ms;
+  uint32_t applied_retreat_ms = retreat_ms > remaining_ms ? remaining_ms : retreat_ms;
+  recordObservedRxRetreat(applied_retreat_ms);
+  return backoff_ms + applied_retreat_ms;
 }
 
 uint32_t KissModem::randomDataBusyBackoffMs(uint32_t estimated_airtime_ms) {
   uint32_t min_ms = _data_busy_backoff_min_ms;
   uint32_t max_ms = getAdaptiveDataBusyBackoffMaxMs(estimated_airtime_ms);
   return randomDelayMs(min_ms, max_ms);
+}
+
+uint32_t KissModem::randomObservedRxRetreatMs(uint32_t now_ms) {
+  if (_observed_rx_guard_priority < KISS_TX_DATA_PRIORITY) return 0;
+  uint32_t observed_rx_window_ms = getRemainingObservedRxBiasMs(now_ms);
+  if (observed_rx_window_ms == 0) return 0;
+  return randomDelayMs(0, observed_rx_window_ms);
+}
+
+void KissModem::recordObservedRxRetreat(uint32_t retreat_ms) {
+  if (retreat_ms == 0) return;
+  _observed_rx_retreat_count++;
+  _last_observed_rx_retreat_ms = retreat_ms;
+}
+
+void KissModem::applyObservedRxQueueRetreat(uint32_t now_ms, uint8_t observed_priority) {
+  if (observed_priority < KISS_TX_DATA_PRIORITY || !headTxIsData()) return;
+  uint32_t retreat_ms = randomObservedRxRetreatMs(now_ms);
+  if (retreat_ms == 0) return;
+
+  uint32_t release_at_ms = now_ms + retreat_ms;
+  if ((int32_t)(release_at_ms - _tx_queue[0].release_at_ms) <= 0) return;
+  _tx_queue[0].release_at_ms = release_at_ms;
+  recordObservedRxRetreat(retreat_ms);
+  recordAdmissionEvent(SCHED_DEFER_OBSERVED_RX, retreat_ms);
 }
 
 uint32_t KissModem::getAdaptiveDataAdmissionBackoffMinMs(uint32_t estimated_airtime_ms) const {
@@ -522,12 +561,6 @@ uint32_t KissModem::getAdaptiveDataAdmissionBackoffMinMs(uint32_t estimated_airt
   if (score_floor_ms > min_ms) min_ms = score_floor_ms;
   if (min_ms > KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS) {
     min_ms = KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS;
-  }
-  uint32_t observed_rx_bias_ms = getRemainingObservedRxBiasMs(millis());
-  if (observed_rx_bias_ms > 0 && min_ms < KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS) {
-    uint32_t remaining_ms = KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS - min_ms;
-    if (observed_rx_bias_ms > remaining_ms) min_ms = KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS;
-    else min_ms += observed_rx_bias_ms;
   }
   return min_ms;
 }
@@ -728,7 +761,10 @@ void KissModem::resetAdmissionState() {
   _last_admission_feedback = 0;
   _observed_rx_count = 0;
   _observed_rx_guard_until_ms = 0;
+  _observed_rx_guard_priority = KISS_TX_DATA_PRIORITY;
   _last_observed_rx_airtime_ms = 0;
+  _observed_rx_retreat_count = 0;
+  _last_observed_rx_retreat_ms = 0;
 }
 
 void KissModem::processTx() {
@@ -867,10 +903,13 @@ void KissModem::onPacketReceived(int8_t snr, int8_t rssi, const uint8_t* packet,
   uint32_t now_ms = millis();
   _last_observed_rx_airtime_ms = _radio.getEstAirtimeFor(len);
   _observed_rx_count++;
+  uint8_t observed_priority = getTxPriority(packet, len);
   uint32_t guard_until_ms = now_ms + getObservedRxGuardMs(_last_observed_rx_airtime_ms);
   if ((int32_t)(guard_until_ms - _observed_rx_guard_until_ms) > 0) {
     _observed_rx_guard_until_ms = guard_until_ms;
+    _observed_rx_guard_priority = observed_priority;
   }
+  applyObservedRxQueueRetreat(now_ms, observed_priority);
 
   writeFrame(KISS_CMD_DATA, packet, len);
   if (_signal_report_enabled) {
@@ -1082,7 +1121,7 @@ void KissModem::handleGetStats() {
 
   uint32_t rx, tx, errors;
   _getStatsCallback(&rx, &tx, &errors);
-  uint8_t buf[94];
+  uint8_t buf[102];
   uint16_t queue_len = _tx_queue_len;
   uint16_t queue_capacity = KISS_TX_QUEUE_CAPACITY;
   uint32_t next_tx_delay_ms = getSchedulerDelayMs();
@@ -1124,6 +1163,8 @@ void KissModem::handleGetStats() {
   memcpy(buf + 82, &_observed_rx_count, 4);
   memcpy(buf + 86, &observed_rx_guard_delay_ms, 4);
   memcpy(buf + 90, &_last_observed_rx_airtime_ms, 4);
+  memcpy(buf + 94, &_observed_rx_retreat_count, 4);
+  memcpy(buf + 98, &_last_observed_rx_retreat_ms, 4);
   writeHardwareFrame(HW_RESP(HW_CMD_GET_STATS), buf, sizeof(buf));
 }
 
