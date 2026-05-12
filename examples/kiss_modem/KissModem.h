@@ -124,7 +124,7 @@
 #define HW_ERR_TX_BACKPRESSURE   0x09
 #define HW_ERR_BUSY              0x0A
 
-#define KISS_FIRMWARE_VERSION 23
+#define KISS_FIRMWARE_VERSION 24
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -332,14 +332,16 @@ class KissModem {
   uint8_t getTxDoneDeferReason(uint32_t next_tx_delay_ms) const;
   bool headTxIsData() const;
   uint32_t randomDelayMs(uint32_t min_ms, uint32_t max_ms);
-  uint32_t randomDataAdmissionBackoffMs(uint32_t estimated_airtime_ms);
-  uint32_t randomDataBusyBackoffMs(uint32_t estimated_airtime_ms);
+  uint32_t randomDataAdmissionBackoffMs(uint8_t priority, uint32_t estimated_airtime_ms);
+  uint32_t randomDataBusyBackoffMs(uint8_t priority, uint32_t estimated_airtime_ms);
   uint32_t randomObservedRxRetreatMs(uint32_t now_ms);
   void recordObservedRxRetreat(uint32_t retreat_ms);
   void applyObservedRxQueueRetreat(uint32_t now_ms, uint8_t observed_priority);
-  uint32_t getAdaptiveDataAdmissionBackoffMinMs(uint32_t estimated_airtime_ms) const;
-  uint32_t getAdaptiveDataAdmissionBackoffMaxMs(uint32_t estimated_airtime_ms) const;
-  uint32_t getAdaptiveDataBusyBackoffMaxMs(uint32_t estimated_airtime_ms) const;
+  uint32_t scaledAirtimeMs(uint32_t estimated_airtime_ms, uint8_t multiplier) const;
+  uint32_t getClassAdmissionBaseMaxMs(uint8_t priority, uint32_t estimated_airtime_ms) const;
+  uint32_t getAdaptiveDataAdmissionBackoffMinMs(uint8_t priority, uint32_t estimated_airtime_ms) const;
+  uint32_t getAdaptiveDataAdmissionBackoffMaxMs(uint8_t priority, uint32_t estimated_airtime_ms) const;
+  uint32_t getAdaptiveDataBusyBackoffMaxMs(uint8_t priority, uint32_t estimated_airtime_ms) const;
   uint32_t getObservedRxGuardMs(uint32_t estimated_airtime_ms) const;
   void decayDataCongestionScore(uint32_t now_ms);
   void increaseDataCongestionScore(uint8_t amount);
