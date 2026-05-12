@@ -30,6 +30,9 @@ KissModem::KissModem(Stream& serial, mesh::LocalIdentity& identity, mesh::RNG& r
   _admission_feedback_failure_count = 0;
   _last_admission_feedback = 0;
   resetAdmissionConfig();
+  _observed_rx_count = 0;
+  _observed_rx_guard_until_ms = 0;
+  _last_observed_rx_airtime_ms = 0;
   _txdelay = KISS_DEFAULT_TXDELAY;
   _persistence = KISS_DEFAULT_PERSISTENCE;
   _slottime = KISS_DEFAULT_SLOTTIME;
@@ -81,6 +84,9 @@ void KissModem::begin() {
   _admission_feedback_success_count = 0;
   _admission_feedback_failure_count = 0;
   _last_admission_feedback = 0;
+  _observed_rx_count = 0;
+  _observed_rx_guard_until_ms = 0;
+  _last_observed_rx_airtime_ms = 0;
   purgeExpiredOverrides();
 }
 
@@ -552,6 +558,17 @@ uint32_t KissModem::getAdaptiveDataBusyBackoffMaxMs(uint32_t estimated_airtime_m
   return max_ms;
 }
 
+uint32_t KissModem::getObservedRxGuardMs(uint32_t estimated_airtime_ms) const {
+  uint32_t guard_ms = estimated_airtime_ms / 2;
+  if (guard_ms < KISS_TX_OBSERVED_RX_GUARD_MIN_MS) {
+    guard_ms = KISS_TX_OBSERVED_RX_GUARD_MIN_MS;
+  }
+  if (guard_ms > KISS_TX_OBSERVED_RX_GUARD_MAX_MS) {
+    guard_ms = KISS_TX_OBSERVED_RX_GUARD_MAX_MS;
+  }
+  return guard_ms;
+}
+
 void KissModem::decayDataCongestionScore(uint32_t now_ms) {
   if (_next_congestion_decay_ms == 0) {
     _next_congestion_decay_ms = now_ms + _data_congestion_decay_interval_ms;
@@ -598,11 +615,24 @@ uint32_t KissModem::getRemainingHeadReleaseDelayMs(uint32_t now_ms) const {
   return _tx_queue[0].release_at_ms - now_ms;
 }
 
+uint32_t KissModem::getRemainingObservedRxGuardDelayMs(uint32_t now_ms) const {
+  if (!headTxIsData()) return 0;
+  if (_observed_rx_guard_until_ms == 0) return 0;
+  if ((int32_t)(_observed_rx_guard_until_ms - now_ms) <= 0) return 0;
+  return _observed_rx_guard_until_ms - now_ms;
+}
+
 uint8_t KissModem::getTxAdmissionDelayReason(uint32_t now_ms) const {
   uint32_t guard_delay_ms = getRemainingChannelGuardDelayMs(now_ms);
   uint32_t release_delay_ms = getRemainingHeadReleaseDelayMs(now_ms);
-  if (release_delay_ms > 0 && release_delay_ms >= guard_delay_ms) {
+  uint32_t observed_rx_delay_ms = getRemainingObservedRxGuardDelayMs(now_ms);
+  if (release_delay_ms > 0 &&
+      release_delay_ms >= guard_delay_ms &&
+      release_delay_ms >= observed_rx_delay_ms) {
     return SCHED_DEFER_RANDOM_BACKOFF;
+  }
+  if (observed_rx_delay_ms > 0 && observed_rx_delay_ms >= guard_delay_ms) {
+    return SCHED_DEFER_OBSERVED_RX;
   }
   if (guard_delay_ms > 0) return SCHED_DEFER_CHANNEL_GUARD;
   return SCHED_DEFER_NONE;
@@ -611,7 +641,9 @@ uint8_t KissModem::getTxAdmissionDelayReason(uint32_t now_ms) const {
 uint32_t KissModem::getRemainingTxAdmissionDelayMs(uint32_t now_ms) const {
   uint32_t guard_delay_ms = getRemainingChannelGuardDelayMs(now_ms);
   uint32_t release_delay_ms = getRemainingHeadReleaseDelayMs(now_ms);
-  return guard_delay_ms > release_delay_ms ? guard_delay_ms : release_delay_ms;
+  uint32_t observed_rx_delay_ms = getRemainingObservedRxGuardDelayMs(now_ms);
+  uint32_t delay_ms = guard_delay_ms > release_delay_ms ? guard_delay_ms : release_delay_ms;
+  return delay_ms > observed_rx_delay_ms ? delay_ms : observed_rx_delay_ms;
 }
 
 uint32_t KissModem::getSchedulerDelayMs(uint32_t now_ms) const {
@@ -685,6 +717,9 @@ void KissModem::resetAdmissionState() {
   _admission_feedback_success_count = 0;
   _admission_feedback_failure_count = 0;
   _last_admission_feedback = 0;
+  _observed_rx_count = 0;
+  _observed_rx_guard_until_ms = 0;
+  _last_observed_rx_airtime_ms = 0;
 }
 
 void KissModem::processTx() {
@@ -820,6 +855,14 @@ void KissModem::processTx() {
 }
 
 void KissModem::onPacketReceived(int8_t snr, int8_t rssi, const uint8_t* packet, uint16_t len) {
+  uint32_t now_ms = millis();
+  _last_observed_rx_airtime_ms = _radio.getEstAirtimeFor(len);
+  _observed_rx_count++;
+  uint32_t guard_until_ms = now_ms + getObservedRxGuardMs(_last_observed_rx_airtime_ms);
+  if ((int32_t)(guard_until_ms - _observed_rx_guard_until_ms) > 0) {
+    _observed_rx_guard_until_ms = guard_until_ms;
+  }
+
   writeFrame(KISS_CMD_DATA, packet, len);
   if (_signal_report_enabled) {
     uint8_t meta[2] = { (uint8_t)snr, (uint8_t)rssi };
@@ -1030,11 +1073,12 @@ void KissModem::handleGetStats() {
 
   uint32_t rx, tx, errors;
   _getStatsCallback(&rx, &tx, &errors);
-  uint8_t buf[82];
+  uint8_t buf[94];
   uint16_t queue_len = _tx_queue_len;
   uint16_t queue_capacity = KISS_TX_QUEUE_CAPACITY;
   uint32_t next_tx_delay_ms = getSchedulerDelayMs();
   uint32_t airtime_budget_ms = KISS_TX_QUEUE_AIRTIME_BUDGET_MS;
+  uint32_t observed_rx_guard_delay_ms = getRemainingObservedRxGuardDelayMs(millis());
   uint32_t admission_reference_airtime_ms = _radio.getEstAirtimeFor(KISS_TX_ADMISSION_WINDOW_REFERENCE_BYTES);
   uint32_t admission_window_min_ms =
       getAdaptiveDataAdmissionBackoffMinMs(admission_reference_airtime_ms);
@@ -1068,6 +1112,9 @@ void KissModem::handleGetStats() {
   memcpy(buf + 73, &_admission_feedback_success_count, 4);
   memcpy(buf + 77, &_admission_feedback_failure_count, 4);
   buf[81] = _last_admission_feedback;
+  memcpy(buf + 82, &_observed_rx_count, 4);
+  memcpy(buf + 86, &observed_rx_guard_delay_ms, 4);
+  memcpy(buf + 90, &_last_observed_rx_airtime_ms, 4);
   writeHardwareFrame(HW_RESP(HW_CMD_GET_STATS), buf, sizeof(buf));
 }
 
@@ -1561,6 +1608,8 @@ const char* KissModem::getLastDeferReasonLabel() const {
       return "backpress";
     case SCHED_DEFER_RANDOM_BACKOFF:
       return "backoff";
+    case SCHED_DEFER_OBSERVED_RX:
+      return "rx-guard";
     default:
       return "unknown";
   }

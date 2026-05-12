@@ -81,6 +81,8 @@ Firmware `1100` widens the zero-score data-admission contention window to the ex
 
 Firmware `1200` adds runtime admission configuration. Hosts can set and read the firmware's data-admission window, busy-retreat window, and congestion-score decay interval without reflashing. The command is intended for bench sweeps and gateway-driven policy experiments; firmware still enforces hard caps and only accepts changes while idle.
 
+Firmware `1300` adds the first board-local overheard-channel input. Each received packet records an observed RX guard for low-priority data admission; ACK/control traffic keeps priority bypass. This gives the scheduler a short post-RX quiet period based on real packets heard by the radio, not only local queued TX state.
+
 In full-duplex mode, CSMA is bypassed and packets transmit after TXDELAY.
 
 ## SetHardware Extensions (0x06)
@@ -218,7 +220,7 @@ All values little-endian.
 | Version | 1 byte | Firmware version |
 | Reserved | 1 byte | Always 0 |
 
-Version `3` adds extended `Stats` and `TxDone` telemetry while retaining compatibility with legacy host parsers. Version `4` adds Cinder `CapabilityStatus` so hosts can gate protocol features on firmware-declared support instead of static board assumptions. Versions `5` through `7` add the Cinder bench priority queue, scheduler guard/defer diagnostics, and queued-airtime/drop telemetry. Version `8` adds low-priority/data backpressure before the four-frame queue reaches full scale. Version `9` keeps scheduler defer and drop reasons separated in `TxDone` telemetry. Version `10` tightens data backpressure when ACK, route, advert, or capability control traffic is already queued so low-rate data cannot consume control headroom during overload. Version `11` (`0B00`) adds randomized data admission/backoff and admission counters. Version `12` (`0C00`) fixes startup TX-power reporting. Version `13` (`0D00`) adds adaptive local data-admission congestion scoring and optional stats fields for the current admission windows. Version `14` (`0E00`) adds host-reported admission feedback for delivered, ACKed, lost, and ACK-timeout outcomes. Version `15` (`0F00`) adds deterministic admission-state reset for repeatable stress runs. Version `16` (`1000`) tunes board-local data admission with an airtime-floor release window, timed score decay, and gentler congestion scoring. Version `17` (`1100`) widens the base data contention window to `1303-8000 ms` for the current max-payload profile. Version `18` (`1200`) adds runtime admission configuration.
+Version `3` adds extended `Stats` and `TxDone` telemetry while retaining compatibility with legacy host parsers. Version `4` adds Cinder `CapabilityStatus` so hosts can gate protocol features on firmware-declared support instead of static board assumptions. Versions `5` through `7` add the Cinder bench priority queue, scheduler guard/defer diagnostics, and queued-airtime/drop telemetry. Version `8` adds low-priority/data backpressure before the four-frame queue reaches full scale. Version `9` keeps scheduler defer and drop reasons separated in `TxDone` telemetry. Version `10` tightens data backpressure when ACK, route, advert, or capability control traffic is already queued so low-rate data cannot consume control headroom during overload. Version `11` (`0B00`) adds randomized data admission/backoff and admission counters. Version `12` (`0C00`) fixes startup TX-power reporting. Version `13` (`0D00`) adds adaptive local data-admission congestion scoring and optional stats fields for the current admission windows. Version `14` (`0E00`) adds host-reported admission feedback for delivered, ACKed, lost, and ACK-timeout outcomes. Version `15` (`0F00`) adds deterministic admission-state reset for repeatable stress runs. Version `16` (`1000`) tunes board-local data admission with an airtime-floor release window, timed score decay, and gentler congestion scoring. Version `17` (`1100`) widens the base data contention window to `1303-8000 ms` for the current max-payload profile. Version `18` (`1200`) adds runtime admission configuration. Version `19` (`1300`) adds observed-RX data guard telemetry and admission defer reason `observed-rx`.
 
 ### CapabilityStatus (CapabilityStatus response)
 
@@ -294,6 +296,9 @@ All values little-endian.
 | AdmissionFeedbackSuccessCount | 4 bytes | Optional cumulative delivered/ACKed host feedback applied to admission scoring |
 | AdmissionFeedbackFailureCount | 4 bytes | Optional cumulative lost/ACK-timeout host feedback applied to admission scoring |
 | LastAdmissionFeedback | 1 byte | Optional last host feedback outcome |
+| ObservedRxCount | 4 bytes | Optional cumulative packets that updated the observed-RX guard |
+| ObservedRxGuardDelayMs | 4 bytes | Optional current remaining data-only observed-RX guard delay |
+| LastObservedRxAirtimeMs | 4 bytes | Optional firmware-estimated airtime of the last observed RX packet |
 
 The current Cinder bench KISS modem uses a four-frame priority TX queue. Hosts should continue to accept the legacy 12-byte payload without queue fields.
 

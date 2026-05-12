@@ -28,6 +28,8 @@
 #define KISS_DEFAULT_PERSISTENCE 63
 #define KISS_DEFAULT_SLOTTIME    10
 #define KISS_TX_CHANNEL_GUARD_MS 1000UL
+#define KISS_TX_OBSERVED_RX_GUARD_MIN_MS 250UL
+#define KISS_TX_OBSERVED_RX_GUARD_MAX_MS 2000UL
 #define KISS_TX_QUEUE_AIRTIME_BUDGET_MS 8000UL
 #define KISS_TX_DATA_QUEUE_HIGH_WATERMARK 3
 #define KISS_TX_DATA_AIRTIME_HIGH_WATERMARK_MS 4000UL
@@ -111,7 +113,7 @@
 #define HW_ERR_TX_BACKPRESSURE   0x09
 #define HW_ERR_BUSY              0x0A
 
-#define KISS_FIRMWARE_VERSION 18
+#define KISS_FIRMWARE_VERSION 19
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -122,6 +124,7 @@
 #define SCHED_DEFER_AIRTIME_FULL  0x06
 #define SCHED_DEFER_BACKPRESSURE  0x07
 #define SCHED_DEFER_RANDOM_BACKOFF 0x08
+#define SCHED_DEFER_OBSERVED_RX   0x09
 
 #define CAPABILITY_STATUS_VERSION 1
 #define CINDER_NATIVE_PROTOCOL_VERSION 1
@@ -248,6 +251,9 @@ class KissModem {
   uint32_t _data_busy_backoff_min_ms;
   uint32_t _data_busy_backoff_max_ms;
   uint32_t _data_congestion_decay_interval_ms;
+  uint32_t _observed_rx_count;
+  uint32_t _observed_rx_guard_until_ms;
+  uint32_t _last_observed_rx_airtime_ms;
 
   uint8_t _txdelay;
   uint8_t _persistence;
@@ -299,11 +305,13 @@ class KissModem {
   uint32_t getAdaptiveDataAdmissionBackoffMinMs(uint32_t estimated_airtime_ms) const;
   uint32_t getAdaptiveDataAdmissionBackoffMaxMs(uint32_t estimated_airtime_ms) const;
   uint32_t getAdaptiveDataBusyBackoffMaxMs(uint32_t estimated_airtime_ms) const;
+  uint32_t getObservedRxGuardMs(uint32_t estimated_airtime_ms) const;
   void decayDataCongestionScore(uint32_t now_ms);
   void increaseDataCongestionScore(uint8_t amount);
   void decreaseDataCongestionScore();
   uint32_t getRemainingChannelGuardDelayMs(uint32_t now_ms) const;
   uint32_t getRemainingHeadReleaseDelayMs(uint32_t now_ms) const;
+  uint32_t getRemainingObservedRxGuardDelayMs(uint32_t now_ms) const;
   uint8_t getTxAdmissionDelayReason(uint32_t now_ms) const;
   uint32_t getRemainingTxAdmissionDelayMs(uint32_t now_ms) const;
   uint32_t getSchedulerDelayMs(uint32_t now_ms) const;
