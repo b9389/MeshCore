@@ -354,15 +354,33 @@ void KissModem::handleHardwareCommand(uint8_t sub_cmd, const uint8_t* data, uint
 uint8_t KissModem::getTxPriority(const uint8_t* data, uint16_t len) const {
   if (len >= 2 && data[0] == CINDER_NATIVE_PROTOCOL_VERSION) {
     switch (data[1]) {
-      case 0x03: /* ACK */
-      case 0x04: /* NACK */
+      case CINDER_NATIVE_PACKET_ACK:
+      case CINDER_NATIVE_PACKET_NACK:
         return 0;
-      case 0x05: /* Node advertisement */
-      case 0x06: /* Reachability advertisement */
-      case 0x07: /* Route request */
-      case 0x08: /* Route reply */
-      case 0x09: /* Capability status */
+      case CINDER_NATIVE_PACKET_NODE_ADVERT:
+      case CINDER_NATIVE_PACKET_REACHABILITY:
+      case CINDER_NATIVE_PACKET_ROUTE_REQUEST:
+      case CINDER_NATIVE_PACKET_ROUTE_REPLY:
+      case CINDER_NATIVE_PACKET_CAPABILITY_STATUS:
         return KISS_TX_CONTROL_PRIORITY_MAX;
+      case CINDER_NATIVE_PACKET_DATA_DIRECT:
+      case CINDER_NATIVE_PACKET_DATA_GROUP:
+        if (len >= 3) {
+          switch (data[2]) {
+            case CINDER_TRAFFIC_CLASS_CONTROL:
+            case CINDER_TRAFFIC_CLASS_STORE_CONTROL:
+              return KISS_TX_CONTROL_PRIORITY_MAX;
+            case CINDER_TRAFFIC_CLASS_TELEMETRY:
+              return KISS_TX_TELEMETRY_PRIORITY;
+            case CINDER_TRAFFIC_CLASS_BULK:
+              return KISS_TX_BULK_PRIORITY;
+            case CINDER_TRAFFIC_CLASS_INTERACTIVE:
+              return KISS_TX_DATA_PRIORITY;
+            default:
+              return KISS_TX_TELEMETRY_PRIORITY;
+          }
+        }
+        break;
       default:
         break;
     }
@@ -474,13 +492,27 @@ bool KissModem::shouldBackpressureTx(uint8_t priority, uint32_t additional_airti
 
   uint8_t queue_high_watermark = KISS_TX_DATA_QUEUE_HIGH_WATERMARK;
   uint32_t airtime_high_watermark_ms = KISS_TX_DATA_AIRTIME_HIGH_WATERMARK_MS;
+  bool reject_oversized_single_frame = false;
+  if (priority >= KISS_TX_TELEMETRY_PRIORITY) {
+    queue_high_watermark = KISS_TX_TELEMETRY_QUEUE_HIGH_WATERMARK;
+    airtime_high_watermark_ms = KISS_TX_TELEMETRY_AIRTIME_HIGH_WATERMARK_MS;
+  }
+  if (priority >= KISS_TX_BULK_PRIORITY) {
+    queue_high_watermark = KISS_TX_BULK_QUEUE_HIGH_WATERMARK;
+    airtime_high_watermark_ms = KISS_TX_BULK_AIRTIME_HIGH_WATERMARK_MS;
+    reject_oversized_single_frame = true;
+  }
   if (hasQueuedControlFrame(first_reorderable)) {
-    queue_high_watermark = KISS_TX_CONTROL_WAIT_DATA_QUEUE_HIGH_WATERMARK;
-    airtime_high_watermark_ms = KISS_TX_CONTROL_WAIT_DATA_AIRTIME_HIGH_WATERMARK_MS;
+    if (queue_high_watermark > KISS_TX_CONTROL_WAIT_DATA_QUEUE_HIGH_WATERMARK) {
+      queue_high_watermark = KISS_TX_CONTROL_WAIT_DATA_QUEUE_HIGH_WATERMARK;
+    }
+    if (airtime_high_watermark_ms > KISS_TX_CONTROL_WAIT_DATA_AIRTIME_HIGH_WATERMARK_MS) {
+      airtime_high_watermark_ms = KISS_TX_CONTROL_WAIT_DATA_AIRTIME_HIGH_WATERMARK_MS;
+    }
   }
 
   if (_tx_queue_len >= queue_high_watermark) return true;
-  if (additional_airtime_ms > airtime_high_watermark_ms) return false;
+  if (additional_airtime_ms > airtime_high_watermark_ms) return reject_oversized_single_frame;
   return _queued_airtime_ms > airtime_high_watermark_ms - additional_airtime_ms;
 }
 
@@ -1608,7 +1640,8 @@ void KissModem::writeCapabilityStatus() {
                            CINDER_FEATURE_FIRMWARE_DIAGNOSTICS |
                            CINDER_FEATURE_ADMISSION_FEEDBACK |
                            CINDER_FEATURE_ADMISSION_RESET |
-                           CINDER_FEATURE_ADMISSION_CONFIG;
+                           CINDER_FEATURE_ADMISSION_CONFIG |
+                           CINDER_FEATURE_TRAFFIC_CLASS_ADMISSION;
   uint16_t supported_transports = CINDER_TRANSPORT_LORA | CINDER_TRANSPORT_SERIAL;
   uint16_t max_low_rate_payload_bytes = CINDER_MAX_LOW_RATE_PAYLOAD_BYTES;
   uint16_t max_queue_frames = KISS_TX_QUEUE_CAPACITY;
