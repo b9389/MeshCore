@@ -1,6 +1,12 @@
 #include "KissModem.h"
 #include <CayenneLPP.h>
 
+#ifndef LORA_TX_POWER
+  #define KISS_DEFAULT_TX_POWER_DBM 0
+#else
+  #define KISS_DEFAULT_TX_POWER_DBM LORA_TX_POWER
+#endif
+
 KissModem::KissModem(Stream& serial, mesh::LocalIdentity& identity, mesh::RNG& rng,
                      mesh::Radio& radio, mesh::MainBoard& board, SensorManager& sensors)
   : _serial(serial), _identity(identity), _rng(rng), _radio(radio), _board(board), _sensors(sensors) {
@@ -34,7 +40,7 @@ KissModem::KissModem(Stream& serial, mesh::LocalIdentity& identity, mesh::RNG& r
   _setTxPowerCallback = nullptr;
   _getCurrentRssiCallback = nullptr;
   _getStatsCallback = nullptr;
-  _config = {0, 0, 0, 0, 0};
+  _config = {0, 0, 0, 0, (uint8_t)KISS_DEFAULT_TX_POWER_DBM};
   _signal_report_enabled = true;
   _last_override_reason = 0;
   for (uint8_t i = 0; i < KISS_MAX_OVERRIDES; i++) {

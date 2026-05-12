@@ -97,7 +97,7 @@ MeshCore-specific functionality uses the standard KISS SetHardware command. The 
 | KeyExchange | `0x07` | Remote PubKey (32) |
 | Hash | `0x08` | Data to hash |
 | SetRadio | `0x09` | Freq (4) + BW (4) + SF (1) + CR (1) |
-| SetTxPower | `0x0A` | Power dBm (1) |
+| SetTxPower | `0x0A` | Chip power dBm (1) |
 | GetRadio | `0x0B` | - |
 | GetTxPower | `0x0C` | - |
 | GetCurrentRssi | `0x0D` | - |
@@ -287,6 +287,8 @@ All multi-byte values are little-endian.
 | SchedulerLastDropReason | 1 byte | Optional last scheduler drop reason |
 
 Hosts should continue to accept the legacy one-byte payload. Firmware `0900` and later append drop counters after the defer fields so a successful TX no longer inherits an unrelated `backpressure` or `queue-full` reason from a later rejected frame.
+
+Firmware `0C00` makes `GetTxPower` report the board's configured startup chip power before any host-side `SetTxPower` command. Earlier experimental builds only reported the last KISS-set value and could return `0` immediately after boot even when the radio had initialized at the board default.
 
 ### Cinder Gateway Artifact Publish
 
