@@ -30,6 +30,9 @@
 #define KISS_TX_CHANNEL_GUARD_MS 1000UL
 #define KISS_TX_OBSERVED_RX_GUARD_MIN_MS 250UL
 #define KISS_TX_OBSERVED_RX_GUARD_MAX_MS 2000UL
+#define KISS_TX_OBSERVED_RX_GUARD_CAP_MS 6000UL
+#define KISS_TX_OBSERVED_RX_GUARD_PERCENT 50UL
+#define KISS_TX_OBSERVED_RX_GUARD_PERCENT_CAP 200UL
 #define KISS_TX_QUEUE_AIRTIME_BUDGET_MS 8000UL
 #define KISS_TX_DATA_QUEUE_HIGH_WATERMARK 3
 #define KISS_TX_DATA_AIRTIME_HIGH_WATERMARK_MS 4000UL
@@ -46,8 +49,10 @@
 #define KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS 8000UL
 #define KISS_TX_DATA_BUSY_BACKOFF_CAP_MS 6000UL
 #define KISS_TX_ADMISSION_WINDOW_REFERENCE_BYTES 229
-#define KISS_ADMISSION_CONFIG_VERSION 1
-#define KISS_ADMISSION_CONFIG_PAYLOAD_LEN 21
+#define KISS_ADMISSION_CONFIG_VERSION_V1 1
+#define KISS_ADMISSION_CONFIG_VERSION 2
+#define KISS_ADMISSION_CONFIG_V1_PAYLOAD_LEN 21
+#define KISS_ADMISSION_CONFIG_PAYLOAD_LEN 33
 
 #define HW_CMD_GET_IDENTITY      0x01
 #define HW_CMD_GET_RANDOM        0x02
@@ -113,7 +118,7 @@
 #define HW_ERR_TX_BACKPRESSURE   0x09
 #define HW_ERR_BUSY              0x0A
 
-#define KISS_FIRMWARE_VERSION 19
+#define KISS_FIRMWARE_VERSION 20
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -251,6 +256,9 @@ class KissModem {
   uint32_t _data_busy_backoff_min_ms;
   uint32_t _data_busy_backoff_max_ms;
   uint32_t _data_congestion_decay_interval_ms;
+  uint32_t _observed_rx_guard_min_ms;
+  uint32_t _observed_rx_guard_max_ms;
+  uint32_t _observed_rx_guard_percent;
   uint32_t _observed_rx_count;
   uint32_t _observed_rx_guard_until_ms;
   uint32_t _last_observed_rx_airtime_ms;

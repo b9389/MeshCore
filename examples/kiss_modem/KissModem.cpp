@@ -559,12 +559,16 @@ uint32_t KissModem::getAdaptiveDataBusyBackoffMaxMs(uint32_t estimated_airtime_m
 }
 
 uint32_t KissModem::getObservedRxGuardMs(uint32_t estimated_airtime_ms) const {
-  uint32_t guard_ms = estimated_airtime_ms / 2;
-  if (guard_ms < KISS_TX_OBSERVED_RX_GUARD_MIN_MS) {
-    guard_ms = KISS_TX_OBSERVED_RX_GUARD_MIN_MS;
+  if (_observed_rx_guard_percent == 0 || _observed_rx_guard_max_ms == 0) {
+    return 0;
   }
-  if (guard_ms > KISS_TX_OBSERVED_RX_GUARD_MAX_MS) {
-    guard_ms = KISS_TX_OBSERVED_RX_GUARD_MAX_MS;
+  uint64_t scaled_ms = ((uint64_t)estimated_airtime_ms * _observed_rx_guard_percent) / 100;
+  uint32_t guard_ms = scaled_ms > UINT32_MAX ? UINT32_MAX : (uint32_t)scaled_ms;
+  if (guard_ms < _observed_rx_guard_min_ms) {
+    guard_ms = _observed_rx_guard_min_ms;
+  }
+  if (guard_ms > _observed_rx_guard_max_ms) {
+    guard_ms = _observed_rx_guard_max_ms;
   }
   return guard_ms;
 }
@@ -697,6 +701,9 @@ void KissModem::resetAdmissionConfig() {
   _data_busy_backoff_min_ms = KISS_TX_DATA_BUSY_BACKOFF_MIN_MS;
   _data_busy_backoff_max_ms = KISS_TX_DATA_BUSY_BACKOFF_MAX_MS;
   _data_congestion_decay_interval_ms = KISS_TX_DATA_CONGESTION_DECAY_INTERVAL_MS;
+  _observed_rx_guard_min_ms = KISS_TX_OBSERVED_RX_GUARD_MIN_MS;
+  _observed_rx_guard_max_ms = KISS_TX_OBSERVED_RX_GUARD_MAX_MS;
+  _observed_rx_guard_percent = KISS_TX_OBSERVED_RX_GUARD_PERCENT;
 }
 
 void KissModem::resetAdmissionState() {
@@ -1303,11 +1310,17 @@ void KissModem::handleResetAdmissionState(const uint8_t* data, uint16_t len) {
 }
 
 void KissModem::handleSetAdmissionConfig(const uint8_t* data, uint16_t len) {
-  if (len != KISS_ADMISSION_CONFIG_PAYLOAD_LEN) {
+  if (len != KISS_ADMISSION_CONFIG_V1_PAYLOAD_LEN &&
+      len != KISS_ADMISSION_CONFIG_PAYLOAD_LEN) {
     writeHardwareError(HW_ERR_INVALID_LENGTH);
     return;
   }
-  if (data[0] != KISS_ADMISSION_CONFIG_VERSION) {
+  if ((data[0] == KISS_ADMISSION_CONFIG_VERSION_V1 &&
+          len != KISS_ADMISSION_CONFIG_V1_PAYLOAD_LEN) ||
+      (data[0] == KISS_ADMISSION_CONFIG_VERSION &&
+          len != KISS_ADMISSION_CONFIG_PAYLOAD_LEN) ||
+      (data[0] != KISS_ADMISSION_CONFIG_VERSION_V1 &&
+          data[0] != KISS_ADMISSION_CONFIG_VERSION)) {
     writeHardwareError(HW_ERR_INVALID_PARAM);
     return;
   }
@@ -1321,18 +1334,29 @@ void KissModem::handleSetAdmissionConfig(const uint8_t* data, uint16_t len) {
   uint32_t busy_min_ms;
   uint32_t busy_max_ms;
   uint32_t decay_interval_ms;
+  uint32_t observed_rx_guard_min_ms = KISS_TX_OBSERVED_RX_GUARD_MIN_MS;
+  uint32_t observed_rx_guard_max_ms = KISS_TX_OBSERVED_RX_GUARD_MAX_MS;
+  uint32_t observed_rx_guard_percent = KISS_TX_OBSERVED_RX_GUARD_PERCENT;
   memcpy(&data_min_ms, data + 1, 4);
   memcpy(&data_max_ms, data + 5, 4);
   memcpy(&busy_min_ms, data + 9, 4);
   memcpy(&busy_max_ms, data + 13, 4);
   memcpy(&decay_interval_ms, data + 17, 4);
+  if (data[0] == KISS_ADMISSION_CONFIG_VERSION) {
+    memcpy(&observed_rx_guard_min_ms, data + 21, 4);
+    memcpy(&observed_rx_guard_max_ms, data + 25, 4);
+    memcpy(&observed_rx_guard_percent, data + 29, 4);
+  }
 
   if (data_min_ms == 0 || data_max_ms == 0 || busy_min_ms == 0 || busy_max_ms == 0 ||
       decay_interval_ms < 1000UL || decay_interval_ms > 600000UL ||
       data_min_ms > data_max_ms ||
       data_max_ms > KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS ||
       busy_min_ms > busy_max_ms ||
-      busy_max_ms > KISS_TX_DATA_BUSY_BACKOFF_CAP_MS) {
+      busy_max_ms > KISS_TX_DATA_BUSY_BACKOFF_CAP_MS ||
+      observed_rx_guard_min_ms > observed_rx_guard_max_ms ||
+      observed_rx_guard_max_ms > KISS_TX_OBSERVED_RX_GUARD_CAP_MS ||
+      observed_rx_guard_percent > KISS_TX_OBSERVED_RX_GUARD_PERCENT_CAP) {
     writeHardwareError(HW_ERR_INVALID_PARAM);
     return;
   }
@@ -1342,6 +1366,9 @@ void KissModem::handleSetAdmissionConfig(const uint8_t* data, uint16_t len) {
   _data_busy_backoff_min_ms = busy_min_ms;
   _data_busy_backoff_max_ms = busy_max_ms;
   _data_congestion_decay_interval_ms = decay_interval_ms;
+  _observed_rx_guard_min_ms = observed_rx_guard_min_ms;
+  _observed_rx_guard_max_ms = observed_rx_guard_max_ms;
+  _observed_rx_guard_percent = observed_rx_guard_percent;
   resetAdmissionState();
   writeAdmissionConfig(HW_RESP(HW_CMD_SET_ADMISSION_CONFIG));
 }
@@ -1572,6 +1599,9 @@ void KissModem::writeAdmissionConfig(uint8_t response_subcommand) {
   memcpy(buf + 9, &_data_busy_backoff_min_ms, 4);
   memcpy(buf + 13, &_data_busy_backoff_max_ms, 4);
   memcpy(buf + 17, &_data_congestion_decay_interval_ms, 4);
+  memcpy(buf + 21, &_observed_rx_guard_min_ms, 4);
+  memcpy(buf + 25, &_observed_rx_guard_max_ms, 4);
+  memcpy(buf + 29, &_observed_rx_guard_percent, 4);
   writeHardwareFrame(response_subcommand, buf, sizeof(buf));
 }
 
