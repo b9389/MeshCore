@@ -67,6 +67,8 @@ The TNC implements p-persistent CSMA for half-duplex operation:
 3. If the value is less than or equal to P (Persistence), wait TXDELAY then transmit
 4. Otherwise, wait SlotTime and repeat from step 1
 
+Firmware `0B00` also adds firmware-owned low-rate data admission. ACK/control frames bypass this gate, but low-priority data frames receive a randomized release time before CSMA. If the radio observes a busy channel while data is at the head of the queue, the data frame retreats with another randomized busy-channel backoff. This does not create a hidden-terminal solution by itself, but it keeps independent hosts from immediately colliding after each board's local queue says it has capacity.
+
 In full-duplex mode, CSMA is bypassed and packets transmit after TXDELAY.
 
 ## SetHardware Extensions (0x06)
@@ -197,7 +199,7 @@ All values little-endian.
 | Version | 1 byte | Firmware version |
 | Reserved | 1 byte | Always 0 |
 
-Version `3` adds extended `Stats` and `TxDone` telemetry while retaining compatibility with legacy host parsers. Version `4` adds Cinder `CapabilityStatus` so hosts can gate protocol features on firmware-declared support instead of static board assumptions. Versions `5` through `7` add the Cinder bench priority queue, scheduler guard/defer diagnostics, and queued-airtime/drop telemetry. Version `8` adds low-priority/data backpressure before the four-frame queue reaches full scale. Version `9` keeps scheduler defer and drop reasons separated in `TxDone` telemetry. Version `10` tightens data backpressure when ACK, route, advert, or capability control traffic is already queued so low-rate data cannot consume control headroom during overload.
+Version `3` adds extended `Stats` and `TxDone` telemetry while retaining compatibility with legacy host parsers. Version `4` adds Cinder `CapabilityStatus` so hosts can gate protocol features on firmware-declared support instead of static board assumptions. Versions `5` through `7` add the Cinder bench priority queue, scheduler guard/defer diagnostics, and queued-airtime/drop telemetry. Version `8` adds low-priority/data backpressure before the four-frame queue reaches full scale. Version `9` keeps scheduler defer and drop reasons separated in `TxDone` telemetry. Version `10` tightens data backpressure when ACK, route, advert, or capability control traffic is already queued so low-rate data cannot consume control headroom during overload. Version `11` (`0B00`) adds randomized data admission/backoff and admission counters.
 
 ### CapabilityStatus (CapabilityStatus response)
 
@@ -259,6 +261,13 @@ All values little-endian.
 | SchedulerAirtimeBudgetMs | 4 bytes | Optional queued-airtime budget |
 | SchedulerDropCount | 4 bytes | Optional cumulative scheduler rejects/drops |
 | SchedulerLastDropReason | 1 byte | Optional last scheduler drop reason |
+| AdmissionAcceptCount | 4 bytes | Optional cumulative firmware admission accepts |
+| AdmissionDeferCount | 4 bytes | Optional cumulative randomized or busy-channel admission deferrals |
+| AdmissionBackoffCount | 4 bytes | Optional cumulative randomized data backoff decisions |
+| AdmissionBusyCount | 4 bytes | Optional cumulative busy-channel data retreat decisions |
+| AdmissionRejectCount | 4 bytes | Optional cumulative admission rejects/backpressure decisions |
+| LastAdmissionDelayMs | 4 bytes | Optional last randomized admission delay |
+| LastAdmissionReason | 1 byte | Optional last admission reason |
 
 The current Cinder bench KISS modem uses a four-frame priority TX queue. Hosts should continue to accept the legacy 12-byte payload without queue fields.
 

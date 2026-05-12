@@ -35,6 +35,10 @@
 #define KISS_TX_CONTROL_WAIT_DATA_AIRTIME_HIGH_WATERMARK_MS 2600UL
 #define KISS_TX_CONTROL_PRIORITY_MAX 1
 #define KISS_TX_DATA_PRIORITY 2
+#define KISS_TX_DATA_ADMISSION_BACKOFF_MIN_MS 250UL
+#define KISS_TX_DATA_ADMISSION_BACKOFF_MAX_MS 4200UL
+#define KISS_TX_DATA_BUSY_BACKOFF_MIN_MS 250UL
+#define KISS_TX_DATA_BUSY_BACKOFF_MAX_MS 2000UL
 
 #define HW_CMD_GET_IDENTITY      0x01
 #define HW_CMD_GET_RANDOM        0x02
@@ -95,7 +99,7 @@
 #define HW_ERR_TX_QUEUE_FULL     0x08
 #define HW_ERR_TX_BACKPRESSURE   0x09
 
-#define KISS_FIRMWARE_VERSION 10
+#define KISS_FIRMWARE_VERSION 11
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -105,6 +109,7 @@
 #define SCHED_DEFER_QUEUE_FULL    0x05
 #define SCHED_DEFER_AIRTIME_FULL  0x06
 #define SCHED_DEFER_BACKPRESSURE  0x07
+#define SCHED_DEFER_RANDOM_BACKOFF 0x08
 
 #define CAPABILITY_STATUS_VERSION 1
 #define CINDER_NATIVE_PROTOCOL_VERSION 1
@@ -176,6 +181,7 @@ struct TxQueueEntry {
   uint16_t len;
   uint8_t priority;
   uint32_t estimated_airtime_ms;
+  uint32_t release_at_ms;
 };
 
 enum TxState {
@@ -205,6 +211,13 @@ class KissModem {
   uint32_t _queued_airtime_ms;
   uint32_t _tx_drop_count;
   uint8_t _last_drop_reason;
+  uint32_t _admission_accept_count;
+  uint32_t _admission_defer_count;
+  uint32_t _admission_backoff_count;
+  uint32_t _admission_busy_count;
+  uint32_t _admission_reject_count;
+  uint32_t _last_admission_delay_ms;
+  uint8_t _last_admission_reason;
 
   uint8_t _txdelay;
   uint8_t _persistence;
@@ -249,8 +262,17 @@ class KissModem {
       uint8_t first_reorderable) const;
   uint8_t getTxRejectErrorCode() const;
   uint8_t getTxDoneDeferReason(uint32_t next_tx_delay_ms) const;
+  bool headTxIsData() const;
+  uint32_t randomDelayMs(uint32_t min_ms, uint32_t max_ms);
+  uint32_t randomDataAdmissionBackoffMs(uint32_t estimated_airtime_ms);
+  uint32_t randomDataBusyBackoffMs(uint32_t estimated_airtime_ms);
+  uint32_t getRemainingChannelGuardDelayMs(uint32_t now_ms) const;
+  uint32_t getRemainingHeadReleaseDelayMs(uint32_t now_ms) const;
+  uint8_t getTxAdmissionDelayReason(uint32_t now_ms) const;
   uint32_t getRemainingTxAdmissionDelayMs(uint32_t now_ms) const;
   uint32_t getSchedulerDelayMs(uint32_t now_ms) const;
+  void recordAdmissionEvent(uint8_t reason, uint32_t delay_ms);
+  uint32_t applyBusyBackoffToHead(uint32_t now_ms);
   void setLastDefer(uint8_t reason, uint32_t delay_ms);
   void recordTxDrop(uint8_t reason);
 
