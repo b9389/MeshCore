@@ -71,6 +71,8 @@ Firmware `0B00` also adds firmware-owned low-rate data admission. ACK/control fr
 
 Firmware `0D00` makes that data gate adaptive. Busy-channel retreats and backpressure increase a bounded local congestion score, which widens future randomized data-admission and busy-retreat windows. Successful data transmissions decay the score. The score is local-only and does not require a coordinator; hosts should treat it as a self-throttle signal, not as proof of end-to-end delivery.
 
+Firmware `0E00` lets the host report delivery/ACK outcomes back into the same local score with `ReportAdmissionFeedback`. Delivered or ACKed frames decay the score; lost frames and ACK timeouts raise it. Firmware still does not parse Cinder message semantics itself, so this is an explicit host-feedback path for bench/gateway controllers.
+
 In full-duplex mode, CSMA is bypassed and packets transmit after TXDELAY.
 
 ## SetHardware Extensions (0x06)
@@ -122,6 +124,7 @@ MeshCore-specific functionality uses the standard KISS SetHardware command. The 
 | ClearVolatileOverrides | `0x43` | - |
 | GetEffectivePolicy | `0x45` | - |
 | GetCapabilityStatus | `0x46` | - |
+| ReportAdmissionFeedback | `0x47` | Outcome (1), optional MessageId (8) |
 
 ### Response Sub-commands (TNC to Host)
 
@@ -201,7 +204,7 @@ All values little-endian.
 | Version | 1 byte | Firmware version |
 | Reserved | 1 byte | Always 0 |
 
-Version `3` adds extended `Stats` and `TxDone` telemetry while retaining compatibility with legacy host parsers. Version `4` adds Cinder `CapabilityStatus` so hosts can gate protocol features on firmware-declared support instead of static board assumptions. Versions `5` through `7` add the Cinder bench priority queue, scheduler guard/defer diagnostics, and queued-airtime/drop telemetry. Version `8` adds low-priority/data backpressure before the four-frame queue reaches full scale. Version `9` keeps scheduler defer and drop reasons separated in `TxDone` telemetry. Version `10` tightens data backpressure when ACK, route, advert, or capability control traffic is already queued so low-rate data cannot consume control headroom during overload. Version `11` (`0B00`) adds randomized data admission/backoff and admission counters. Version `12` (`0C00`) fixes startup TX-power reporting. Version `13` (`0D00`) adds adaptive local data-admission congestion scoring and optional stats fields for the current admission windows.
+Version `3` adds extended `Stats` and `TxDone` telemetry while retaining compatibility with legacy host parsers. Version `4` adds Cinder `CapabilityStatus` so hosts can gate protocol features on firmware-declared support instead of static board assumptions. Versions `5` through `7` add the Cinder bench priority queue, scheduler guard/defer diagnostics, and queued-airtime/drop telemetry. Version `8` adds low-priority/data backpressure before the four-frame queue reaches full scale. Version `9` keeps scheduler defer and drop reasons separated in `TxDone` telemetry. Version `10` tightens data backpressure when ACK, route, advert, or capability control traffic is already queued so low-rate data cannot consume control headroom during overload. Version `11` (`0B00`) adds randomized data admission/backoff and admission counters. Version `12` (`0C00`) fixes startup TX-power reporting. Version `13` (`0D00`) adds adaptive local data-admission congestion scoring and optional stats fields for the current admission windows. Version `14` (`0E00`) adds host-reported admission feedback for delivered, ACKed, lost, and ACK-timeout outcomes.
 
 ### CapabilityStatus (CapabilityStatus response)
 
@@ -213,7 +216,7 @@ All multi-byte values are little-endian. This is a firmware control-plane status
 | NativeProtocolVersion | 1 byte | Cinder native protocol version supported by this firmware, currently `1` |
 | BearerProfile | 1 byte | `0x02` = KISS bench bearer |
 | EffectiveRole | 1 byte | `0x00` auto, `0x01` leaf, `0x02` relay, `0x03` quiet |
-| FeatureFlags | 4 bytes | Cinder capability bitset; current firmware sets override control and firmware diagnostics |
+| FeatureFlags | 4 bytes | Cinder capability bitset; current firmware sets override control, firmware diagnostics, and admission feedback |
 | SupportedTransports | 2 bytes | Cinder transport bitmask; current firmware sets LoRa and serial |
 | MaxLowRatePayloadBytes | 2 bytes | Current Cinder low-rate payload target, `192` bytes |
 | MaxQueueFrames | 2 bytes | Firmware TX queue capacity, currently `4` |
@@ -274,8 +277,20 @@ All values little-endian.
 | AdmissionWindowMinMs | 4 bytes | Optional current randomized data-admission window minimum for a max-payload bench frame |
 | AdmissionWindowMaxMs | 4 bytes | Optional current randomized data-admission window maximum for a max-payload bench frame |
 | AdmissionBusyWindowMaxMs | 4 bytes | Optional current busy-channel retreat window maximum for a max-payload bench frame |
+| AdmissionFeedbackSuccessCount | 4 bytes | Optional cumulative delivered/ACKed host feedback applied to admission scoring |
+| AdmissionFeedbackFailureCount | 4 bytes | Optional cumulative lost/ACK-timeout host feedback applied to admission scoring |
+| LastAdmissionFeedback | 1 byte | Optional last host feedback outcome |
 
 The current Cinder bench KISS modem uses a four-frame priority TX queue. Hosts should continue to accept the legacy 12-byte payload without queue fields.
+
+### ReportAdmissionFeedback (command `0x47`)
+
+Firmware `0E00` accepts host-reported delivery outcomes so a controller that understands Cinder message IDs can feed end-to-end observations back into board-local admission. The firmware only uses the outcome byte today; the optional message ID is accepted for host/protocol alignment and future debugging.
+
+| Field | Size | Description |
+|-------|------|-------------|
+| Outcome | 1 byte | `0x01` delivered, `0x02` ACKed, `0x03` lost, `0x04` ACK timeout |
+| MessageId | 8 bytes | Optional little-endian Cinder message ID |
 
 ### TxDone (TxDone event)
 
@@ -297,6 +312,8 @@ Hosts should continue to accept the legacy one-byte payload. Firmware `0900` and
 Firmware `0C00` makes `GetTxPower` report the board's configured startup chip power before any host-side `SetTxPower` command. Earlier experimental builds only reported the last KISS-set value and could return `0` immediately after boot even when the radio had initialized at the board default.
 
 Firmware `0D00` appends the adaptive data-admission congestion score and current backoff windows to `Stats`. Legacy hosts can ignore these trailing bytes.
+
+Firmware `0E00` appends host feedback counters to `Stats`. Legacy hosts can ignore these trailing bytes.
 
 ### Cinder Gateway Artifact Publish
 

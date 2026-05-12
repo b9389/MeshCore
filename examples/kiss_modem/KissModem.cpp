@@ -25,6 +25,9 @@ KissModem::KissModem(Stream& serial, mesh::LocalIdentity& identity, mesh::RNG& r
   _last_admission_delay_ms = 0;
   _last_admission_reason = SCHED_DEFER_NONE;
   _data_congestion_score = 0;
+  _admission_feedback_success_count = 0;
+  _admission_feedback_failure_count = 0;
+  _last_admission_feedback = 0;
   _txdelay = KISS_DEFAULT_TXDELAY;
   _persistence = KISS_DEFAULT_PERSISTENCE;
   _slottime = KISS_DEFAULT_SLOTTIME;
@@ -71,6 +74,9 @@ void KissModem::begin() {
   _last_admission_delay_ms = 0;
   _last_admission_reason = SCHED_DEFER_NONE;
   _data_congestion_score = 0;
+  _admission_feedback_success_count = 0;
+  _admission_feedback_failure_count = 0;
+  _last_admission_feedback = 0;
   purgeExpiredOverrides();
 }
 
@@ -309,6 +315,9 @@ void KissModem::handleHardwareCommand(uint8_t sub_cmd, const uint8_t* data, uint
       break;
     case HW_CMD_GET_CAPABILITY_STATUS:
       handleGetCapabilityStatus();
+      break;
+    case HW_CMD_REPORT_ADMISSION_FEEDBACK:
+      handleAdmissionFeedback(data, len);
       break;
     default:
       writeHardwareError(HW_ERR_UNKNOWN_CMD);
@@ -958,7 +967,7 @@ void KissModem::handleGetStats() {
 
   uint32_t rx, tx, errors;
   _getStatsCallback(&rx, &tx, &errors);
-  uint8_t buf[73];
+  uint8_t buf[82];
   uint16_t queue_len = _tx_queue_len;
   uint16_t queue_capacity = KISS_TX_QUEUE_CAPACITY;
   uint32_t next_tx_delay_ms = getSchedulerDelayMs();
@@ -993,6 +1002,9 @@ void KissModem::handleGetStats() {
   memcpy(buf + 61, &admission_window_min_ms, 4);
   memcpy(buf + 65, &admission_window_max_ms, 4);
   memcpy(buf + 69, &busy_window_max_ms, 4);
+  memcpy(buf + 73, &_admission_feedback_success_count, 4);
+  memcpy(buf + 77, &_admission_feedback_failure_count, 4);
+  buf[81] = _last_admission_feedback;
   writeHardwareFrame(HW_RESP(HW_CMD_GET_STATS), buf, sizeof(buf));
 }
 
@@ -1128,6 +1140,41 @@ void KissModem::handleGetEffectivePolicy() {
 
 void KissModem::handleGetCapabilityStatus() {
   writeCapabilityStatus();
+}
+
+void KissModem::handleAdmissionFeedback(const uint8_t* data, uint16_t len) {
+  if (len < 1) {
+    writeHardwareError(HW_ERR_INVALID_LENGTH);
+    return;
+  }
+
+  uint8_t feedback = data[0];
+  _last_admission_feedback = feedback;
+  switch (feedback) {
+    case ADMISSION_FEEDBACK_DELIVERED:
+      _admission_feedback_success_count++;
+      decreaseDataCongestionScore();
+      writeHardwareFrame(HW_RESP_OK, nullptr, 0);
+      break;
+    case ADMISSION_FEEDBACK_ACKED:
+      _admission_feedback_success_count++;
+      decreaseDataCongestionScore();
+      writeHardwareFrame(HW_RESP_OK, nullptr, 0);
+      break;
+    case ADMISSION_FEEDBACK_LOST:
+      _admission_feedback_failure_count++;
+      increaseDataCongestionScore(2);
+      writeHardwareFrame(HW_RESP_OK, nullptr, 0);
+      break;
+    case ADMISSION_FEEDBACK_ACK_TIMEOUT:
+      _admission_feedback_failure_count++;
+      increaseDataCongestionScore(1);
+      writeHardwareFrame(HW_RESP_OK, nullptr, 0);
+      break;
+    default:
+      writeHardwareError(HW_ERR_INVALID_PARAM);
+      break;
+  }
 }
 
 void KissModem::purgeExpiredOverrides() {
@@ -1310,7 +1357,8 @@ void KissModem::writeCapabilityStatus() {
   purgeExpiredOverrides();
 
   uint32_t feature_flags = CINDER_FEATURE_OVERRIDE_CONTROL |
-                           CINDER_FEATURE_FIRMWARE_DIAGNOSTICS;
+                           CINDER_FEATURE_FIRMWARE_DIAGNOSTICS |
+                           CINDER_FEATURE_ADMISSION_FEEDBACK;
   uint16_t supported_transports = CINDER_TRANSPORT_LORA | CINDER_TRANSPORT_SERIAL;
   uint16_t max_low_rate_payload_bytes = CINDER_MAX_LOW_RATE_PAYLOAD_BYTES;
   uint16_t max_queue_frames = KISS_TX_QUEUE_CAPACITY;
