@@ -29,6 +29,10 @@ KissModem::KissModem(Stream& serial, mesh::LocalIdentity& identity, mesh::RNG& r
   _admission_feedback_success_count = 0;
   _admission_feedback_failure_count = 0;
   _last_admission_feedback = 0;
+  clearFeedbackHistory();
+  _interactive_feedback_pressure = 0;
+  _telemetry_feedback_pressure = 0;
+  _bulk_feedback_pressure = 0;
   resetAdmissionConfig();
   _observed_rx_count = 0;
   _observed_rx_guard_until_ms = 0;
@@ -87,6 +91,10 @@ void KissModem::begin() {
   _admission_feedback_success_count = 0;
   _admission_feedback_failure_count = 0;
   _last_admission_feedback = 0;
+  clearFeedbackHistory();
+  _interactive_feedback_pressure = 0;
+  _telemetry_feedback_pressure = 0;
+  _bulk_feedback_pressure = 0;
   _observed_rx_count = 0;
   _observed_rx_guard_until_ms = 0;
   _observed_rx_guard_priority = KISS_TX_DATA_PRIORITY;
@@ -429,6 +437,8 @@ bool KissModem::enqueueTx(const uint8_t* data, uint16_t len) {
   _tx_queue[insert_index].len = len;
   _tx_queue[insert_index].priority = priority;
   _tx_queue[insert_index].estimated_airtime_ms = estimated_airtime_ms;
+  _tx_queue[insert_index].has_message_id =
+      parseNativeDataMessageId(data, len, &_tx_queue[insert_index].message_id);
   if (priority >= KISS_TX_DATA_PRIORITY) {
     uint32_t backoff_ms = randomDataAdmissionBackoffMs(priority, estimated_airtime_ms);
     release_at_ms += backoff_ms;
@@ -533,6 +543,74 @@ bool KissModem::headTxIsData() const {
   return _tx_queue_len > 0 && _tx_queue[0].priority >= KISS_TX_DATA_PRIORITY;
 }
 
+bool KissModem::parseNativeDataMessageId(
+    const uint8_t* data, uint16_t len, uint64_t* message_id) const {
+  if (message_id == nullptr || len < 11) return false;
+  if (data[0] != CINDER_NATIVE_PROTOCOL_VERSION) return false;
+  if (data[1] != CINDER_NATIVE_PACKET_DATA_DIRECT &&
+      data[1] != CINDER_NATIVE_PACKET_DATA_GROUP) {
+    return false;
+  }
+
+  uint64_t value = 0;
+  for (uint8_t i = 0; i < 8; i++) {
+    value = (value << 8) | data[3 + i];
+  }
+  *message_id = value;
+  return true;
+}
+
+void KissModem::clearFeedbackHistory() {
+  _feedback_history_next = 0;
+  for (uint8_t i = 0; i < KISS_TX_FEEDBACK_HISTORY_CAPACITY; i++) {
+    _feedback_history[i] = {false, 0, KISS_TX_DATA_PRIORITY};
+  }
+}
+
+void KissModem::rememberSentDataFeedback(uint64_t message_id, uint8_t priority) {
+  _feedback_history[_feedback_history_next] = {true, message_id, priority};
+  _feedback_history_next =
+      (_feedback_history_next + 1) % KISS_TX_FEEDBACK_HISTORY_CAPACITY;
+}
+
+uint8_t KissModem::lookupFeedbackPriority(uint64_t message_id) const {
+  for (uint8_t i = 0; i < KISS_TX_FEEDBACK_HISTORY_CAPACITY; i++) {
+    if (_feedback_history[i].active && _feedback_history[i].message_id == message_id) {
+      return _feedback_history[i].priority;
+    }
+  }
+  return KISS_TX_DATA_PRIORITY;
+}
+
+uint8_t KissModem::getFeedbackPressureForPriority(uint8_t priority) const {
+  if (priority >= KISS_TX_BULK_PRIORITY) return _bulk_feedback_pressure;
+  if (priority >= KISS_TX_TELEMETRY_PRIORITY) return _telemetry_feedback_pressure;
+  return _interactive_feedback_pressure;
+}
+
+void KissModem::increaseFeedbackPressureForPriority(uint8_t priority, uint8_t amount) {
+  if (amount == 0) return;
+  uint8_t* pressure = &_interactive_feedback_pressure;
+  if (priority >= KISS_TX_BULK_PRIORITY) pressure = &_bulk_feedback_pressure;
+  else if (priority >= KISS_TX_TELEMETRY_PRIORITY) pressure = &_telemetry_feedback_pressure;
+
+  if (*pressure > KISS_TX_FEEDBACK_PRESSURE_SCORE_MAX - amount) {
+    *pressure = KISS_TX_FEEDBACK_PRESSURE_SCORE_MAX;
+  } else {
+    *pressure += amount;
+  }
+}
+
+void KissModem::decreaseFeedbackPressureForPriority(uint8_t priority, uint8_t amount) {
+  if (amount == 0) return;
+  uint8_t* pressure = &_interactive_feedback_pressure;
+  if (priority >= KISS_TX_BULK_PRIORITY) pressure = &_bulk_feedback_pressure;
+  else if (priority >= KISS_TX_TELEMETRY_PRIORITY) pressure = &_telemetry_feedback_pressure;
+
+  if (*pressure > amount) *pressure -= amount;
+  else *pressure = 0;
+}
+
 uint32_t KissModem::randomDelayMs(uint32_t min_ms, uint32_t max_ms) {
   if (max_ms <= min_ms) return min_ms;
   uint16_t random_value = 0;
@@ -619,6 +697,17 @@ uint32_t KissModem::getAdaptiveDataAdmissionBackoffMinMs(
   }
   uint32_t score_floor_ms = (estimated_airtime_ms / 4) * _data_congestion_score;
   if (score_floor_ms > min_ms) min_ms = score_floor_ms;
+  uint8_t feedback_pressure = getFeedbackPressureForPriority(priority);
+  if (feedback_pressure > 0 && min_ms < KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS) {
+    uint32_t pressure_floor_ms = (estimated_airtime_ms / 2) * feedback_pressure;
+    if (priority >= KISS_TX_BULK_PRIORITY) {
+      pressure_floor_ms = scaledAirtimeMs(estimated_airtime_ms, feedback_pressure + 1);
+    } else if (priority >= KISS_TX_TELEMETRY_PRIORITY) {
+      pressure_floor_ms = scaledAirtimeMs(estimated_airtime_ms, feedback_pressure);
+    }
+    uint32_t remaining_ms = KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS - min_ms;
+    min_ms += pressure_floor_ms > remaining_ms ? remaining_ms : pressure_floor_ms;
+  }
   if (min_ms > KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS) {
     min_ms = KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS;
   }
@@ -629,7 +718,22 @@ uint32_t KissModem::getAdaptiveDataAdmissionBackoffMaxMs(
     uint8_t priority, uint32_t estimated_airtime_ms) const {
   uint32_t max_ms = getClassAdmissionBaseMaxMs(priority, estimated_airtime_ms);
 
+  uint8_t feedback_pressure = getFeedbackPressureForPriority(priority);
   uint32_t score_extension_ms = estimated_airtime_ms * _data_congestion_score;
+  uint32_t feedback_extension_ms = estimated_airtime_ms * feedback_pressure;
+  if (priority >= KISS_TX_TELEMETRY_PRIORITY) {
+    feedback_extension_ms = scaledAirtimeMs(estimated_airtime_ms, feedback_pressure + 1);
+  }
+  if (score_extension_ms >= KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS) {
+    score_extension_ms = KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS;
+  } else {
+    uint32_t score_remaining_ms = KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS - score_extension_ms;
+    if (feedback_extension_ms > score_remaining_ms) {
+      score_extension_ms = KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS;
+    } else {
+      score_extension_ms += feedback_extension_ms;
+    }
+  }
   uint32_t remaining_ms = KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS - max_ms;
   if (score_extension_ms > remaining_ms) max_ms = KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS;
   else max_ms += score_extension_ms;
@@ -650,7 +754,22 @@ uint32_t KissModem::getAdaptiveDataBusyBackoffMaxMs(
     max_ms = KISS_TX_DATA_BUSY_BACKOFF_CAP_MS;
   }
 
+  uint8_t feedback_pressure = getFeedbackPressureForPriority(priority);
   uint32_t score_extension_ms = (estimated_airtime_ms / 2) * _data_congestion_score;
+  uint32_t feedback_extension_ms = (estimated_airtime_ms / 2) * feedback_pressure;
+  if (priority >= KISS_TX_TELEMETRY_PRIORITY) {
+    feedback_extension_ms = estimated_airtime_ms * feedback_pressure;
+  }
+  if (score_extension_ms >= KISS_TX_DATA_BUSY_BACKOFF_CAP_MS) {
+    score_extension_ms = KISS_TX_DATA_BUSY_BACKOFF_CAP_MS;
+  } else {
+    uint32_t score_remaining_ms = KISS_TX_DATA_BUSY_BACKOFF_CAP_MS - score_extension_ms;
+    if (feedback_extension_ms > score_remaining_ms) {
+      score_extension_ms = KISS_TX_DATA_BUSY_BACKOFF_CAP_MS;
+    } else {
+      score_extension_ms += feedback_extension_ms;
+    }
+  }
   uint32_t remaining_ms = KISS_TX_DATA_BUSY_BACKOFF_CAP_MS - max_ms;
   if (score_extension_ms > remaining_ms) max_ms = KISS_TX_DATA_BUSY_BACKOFF_CAP_MS;
   else max_ms += score_extension_ms;
@@ -820,6 +939,10 @@ void KissModem::resetAdmissionState() {
   _admission_feedback_success_count = 0;
   _admission_feedback_failure_count = 0;
   _last_admission_feedback = 0;
+  clearFeedbackHistory();
+  _interactive_feedback_pressure = 0;
+  _telemetry_feedback_pressure = 0;
+  _bulk_feedback_pressure = 0;
   _observed_rx_count = 0;
   _observed_rx_guard_until_ms = 0;
   _observed_rx_guard_priority = KISS_TX_DATA_PRIORITY;
@@ -935,6 +1058,9 @@ void KissModem::processTx() {
     case TX_SENDING:
       if (_radio.isSendComplete()) {
         bool sent_data_frame = headTxIsData();
+        bool sent_has_message_id = _tx_queue_len > 0 && _tx_queue[0].has_message_id;
+        uint64_t sent_message_id = sent_has_message_id ? _tx_queue[0].message_id : 0;
+        uint8_t sent_priority = _tx_queue_len > 0 ? _tx_queue[0].priority : KISS_TX_DATA_PRIORITY;
         _radio.onSendFinished();
         uint32_t finished_ms = millis();
         _last_tx_duration_ms = finished_ms - _tx_started_ms;
@@ -953,6 +1079,9 @@ void KissModem::processTx() {
         memcpy(tx_done + 14, &_tx_drop_count, 4);
         tx_done[18] = _last_drop_reason;
         writeHardwareFrame(HW_RESP_TX_DONE, tx_done, sizeof(tx_done));
+        if (sent_data_frame && sent_has_message_id) {
+          rememberSentDataFeedback(sent_message_id, sent_priority);
+        }
         if (sent_data_frame) decreaseDataCongestionScore();
         _tx_state = TX_IDLE;
       }
@@ -1370,25 +1499,37 @@ void KissModem::handleAdmissionFeedback(const uint8_t* data, uint16_t len) {
   }
 
   uint8_t feedback = data[0];
+  uint8_t feedback_priority = KISS_TX_DATA_PRIORITY;
+  if (len >= 9) {
+    uint64_t message_id = 0;
+    for (uint8_t i = 0; i < 8; i++) {
+      message_id |= ((uint64_t)data[1 + i]) << (8 * i);
+    }
+    feedback_priority = lookupFeedbackPriority(message_id);
+  }
   _last_admission_feedback = feedback;
   switch (feedback) {
     case ADMISSION_FEEDBACK_DELIVERED:
       _admission_feedback_success_count++;
+      decreaseFeedbackPressureForPriority(feedback_priority, 1);
       decreaseDataCongestionScore();
       writeHardwareFrame(HW_RESP_OK, nullptr, 0);
       break;
     case ADMISSION_FEEDBACK_ACKED:
       _admission_feedback_success_count++;
+      decreaseFeedbackPressureForPriority(feedback_priority, 2);
       decreaseDataCongestionScore();
       writeHardwareFrame(HW_RESP_OK, nullptr, 0);
       break;
     case ADMISSION_FEEDBACK_LOST:
       _admission_feedback_failure_count++;
+      increaseFeedbackPressureForPriority(feedback_priority, 1);
       increaseDataCongestionScore(1);
       writeHardwareFrame(HW_RESP_OK, nullptr, 0);
       break;
     case ADMISSION_FEEDBACK_ACK_TIMEOUT:
       _admission_feedback_failure_count++;
+      increaseFeedbackPressureForPriority(feedback_priority, 2);
       increaseDataCongestionScore(1);
       writeHardwareFrame(HW_RESP_OK, nullptr, 0);
       break;

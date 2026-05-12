@@ -51,10 +51,12 @@
 #define KISS_TX_DATA_BUSY_BACKOFF_MIN_MS 250UL
 #define KISS_TX_DATA_BUSY_BACKOFF_MAX_MS 2000UL
 #define KISS_TX_DATA_CONGESTION_SCORE_MAX 8
+#define KISS_TX_FEEDBACK_PRESSURE_SCORE_MAX 4
 #define KISS_TX_DATA_CONGESTION_DECAY_INTERVAL_MS 15000UL
 #define KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS 8000UL
 #define KISS_TX_DATA_BUSY_BACKOFF_CAP_MS 6000UL
 #define KISS_TX_ADMISSION_WINDOW_REFERENCE_BYTES 229
+#define KISS_TX_FEEDBACK_HISTORY_CAPACITY 8
 #define KISS_ADMISSION_CONFIG_VERSION_V1 1
 #define KISS_ADMISSION_CONFIG_VERSION 2
 #define KISS_ADMISSION_CONFIG_V1_PAYLOAD_LEN 21
@@ -124,7 +126,7 @@
 #define HW_ERR_TX_BACKPRESSURE   0x09
 #define HW_ERR_BUSY              0x0A
 
-#define KISS_FIRMWARE_VERSION 24
+#define KISS_FIRMWARE_VERSION 25
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -231,6 +233,14 @@ struct TxQueueEntry {
   uint8_t priority;
   uint32_t estimated_airtime_ms;
   uint32_t release_at_ms;
+  bool has_message_id;
+  uint64_t message_id;
+};
+
+struct TxFeedbackEntry {
+  bool active;
+  uint64_t message_id;
+  uint8_t priority;
 };
 
 enum TxState {
@@ -272,6 +282,11 @@ class KissModem {
   uint32_t _admission_feedback_success_count;
   uint32_t _admission_feedback_failure_count;
   uint8_t _last_admission_feedback;
+  TxFeedbackEntry _feedback_history[KISS_TX_FEEDBACK_HISTORY_CAPACITY];
+  uint8_t _feedback_history_next;
+  uint8_t _interactive_feedback_pressure;
+  uint8_t _telemetry_feedback_pressure;
+  uint8_t _bulk_feedback_pressure;
   uint32_t _data_admission_backoff_min_ms;
   uint32_t _data_admission_backoff_max_ms;
   uint32_t _data_busy_backoff_min_ms;
@@ -331,6 +346,13 @@ class KissModem {
   uint8_t getTxRejectErrorCode() const;
   uint8_t getTxDoneDeferReason(uint32_t next_tx_delay_ms) const;
   bool headTxIsData() const;
+  bool parseNativeDataMessageId(const uint8_t* data, uint16_t len, uint64_t* message_id) const;
+  void clearFeedbackHistory();
+  void rememberSentDataFeedback(uint64_t message_id, uint8_t priority);
+  uint8_t lookupFeedbackPriority(uint64_t message_id) const;
+  uint8_t getFeedbackPressureForPriority(uint8_t priority) const;
+  void increaseFeedbackPressureForPriority(uint8_t priority, uint8_t amount);
+  void decreaseFeedbackPressureForPriority(uint8_t priority, uint8_t amount);
   uint32_t randomDelayMs(uint32_t min_ms, uint32_t max_ms);
   uint32_t randomDataAdmissionBackoffMs(uint8_t priority, uint32_t estimated_airtime_ms);
   uint32_t randomDataBusyBackoffMs(uint8_t priority, uint32_t estimated_airtime_ms);
