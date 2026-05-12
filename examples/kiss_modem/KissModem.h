@@ -51,11 +51,14 @@
 #define KISS_TX_DATA_BUSY_BACKOFF_MIN_MS 250UL
 #define KISS_TX_DATA_BUSY_BACKOFF_MAX_MS 2000UL
 #define KISS_TX_DATA_CONGESTION_SCORE_MAX 8
-#define KISS_TX_FEEDBACK_PRESSURE_SCORE_MAX 4
+#define KISS_TX_INTERACTIVE_FEEDBACK_PRESSURE_MAX 1
+#define KISS_TX_TELEMETRY_FEEDBACK_PRESSURE_MAX 2
+#define KISS_TX_BULK_FEEDBACK_PRESSURE_MAX 3
 #define KISS_TX_DATA_CONGESTION_DECAY_INTERVAL_MS 15000UL
 #define KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS 8000UL
 #define KISS_TX_DATA_BUSY_BACKOFF_CAP_MS 6000UL
 #define KISS_TX_ADMISSION_WINDOW_REFERENCE_BYTES 229
+#define KISS_TX_ACK_TURN_PROTECT_MS 600UL
 #define KISS_TX_FEEDBACK_HISTORY_CAPACITY 8
 #define KISS_ADMISSION_CONFIG_VERSION_V1 1
 #define KISS_ADMISSION_CONFIG_VERSION 2
@@ -126,7 +129,7 @@
 #define HW_ERR_TX_BACKPRESSURE   0x09
 #define HW_ERR_BUSY              0x0A
 
-#define KISS_FIRMWARE_VERSION 25
+#define KISS_FIRMWARE_VERSION 26
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -298,6 +301,7 @@ class KissModem {
   uint32_t _observed_rx_count;
   uint32_t _observed_rx_guard_until_ms;
   uint8_t _observed_rx_guard_priority;
+  uint32_t _ack_turn_protect_until_ms;
   uint32_t _last_observed_rx_airtime_ms;
   uint32_t _observed_rx_retreat_count;
   uint32_t _last_observed_rx_retreat_ms;
@@ -351,6 +355,7 @@ class KissModem {
   void rememberSentDataFeedback(uint64_t message_id, uint8_t priority);
   uint8_t lookupFeedbackPriority(uint64_t message_id) const;
   uint8_t getFeedbackPressureForPriority(uint8_t priority) const;
+  uint8_t getFeedbackPressureMaxForPriority(uint8_t priority) const;
   void increaseFeedbackPressureForPriority(uint8_t priority, uint8_t amount);
   void decreaseFeedbackPressureForPriority(uint8_t priority, uint8_t amount);
   uint32_t randomDelayMs(uint32_t min_ms, uint32_t max_ms);
@@ -370,6 +375,7 @@ class KissModem {
   void decreaseDataCongestionScore();
   uint32_t getRemainingChannelGuardDelayMs(uint32_t now_ms) const;
   uint32_t getRemainingHeadReleaseDelayMs(uint32_t now_ms) const;
+  uint32_t getRemainingAckTurnProtectDelayMs(uint32_t now_ms) const;
   uint32_t getRemainingObservedRxBiasMs(uint32_t now_ms) const;
   uint32_t getRemainingObservedRxGuardDelayMs(uint32_t now_ms) const;
   uint8_t getTxAdmissionDelayReason(uint32_t now_ms) const;

@@ -37,6 +37,7 @@ KissModem::KissModem(Stream& serial, mesh::LocalIdentity& identity, mesh::RNG& r
   _observed_rx_count = 0;
   _observed_rx_guard_until_ms = 0;
   _observed_rx_guard_priority = KISS_TX_DATA_PRIORITY;
+  _ack_turn_protect_until_ms = 0;
   _last_observed_rx_airtime_ms = 0;
   _observed_rx_retreat_count = 0;
   _last_observed_rx_retreat_ms = 0;
@@ -98,6 +99,7 @@ void KissModem::begin() {
   _observed_rx_count = 0;
   _observed_rx_guard_until_ms = 0;
   _observed_rx_guard_priority = KISS_TX_DATA_PRIORITY;
+  _ack_turn_protect_until_ms = 0;
   _last_observed_rx_airtime_ms = 0;
   _observed_rx_retreat_count = 0;
   _last_observed_rx_retreat_ms = 0;
@@ -588,14 +590,21 @@ uint8_t KissModem::getFeedbackPressureForPriority(uint8_t priority) const {
   return _interactive_feedback_pressure;
 }
 
+uint8_t KissModem::getFeedbackPressureMaxForPriority(uint8_t priority) const {
+  if (priority >= KISS_TX_BULK_PRIORITY) return KISS_TX_BULK_FEEDBACK_PRESSURE_MAX;
+  if (priority >= KISS_TX_TELEMETRY_PRIORITY) return KISS_TX_TELEMETRY_FEEDBACK_PRESSURE_MAX;
+  return KISS_TX_INTERACTIVE_FEEDBACK_PRESSURE_MAX;
+}
+
 void KissModem::increaseFeedbackPressureForPriority(uint8_t priority, uint8_t amount) {
   if (amount == 0) return;
   uint8_t* pressure = &_interactive_feedback_pressure;
   if (priority >= KISS_TX_BULK_PRIORITY) pressure = &_bulk_feedback_pressure;
   else if (priority >= KISS_TX_TELEMETRY_PRIORITY) pressure = &_telemetry_feedback_pressure;
 
-  if (*pressure > KISS_TX_FEEDBACK_PRESSURE_SCORE_MAX - amount) {
-    *pressure = KISS_TX_FEEDBACK_PRESSURE_SCORE_MAX;
+  uint8_t max_pressure = getFeedbackPressureMaxForPriority(priority);
+  if (*pressure > max_pressure - amount) {
+    *pressure = max_pressure;
   } else {
     *pressure += amount;
   }
@@ -837,6 +846,13 @@ uint32_t KissModem::getRemainingHeadReleaseDelayMs(uint32_t now_ms) const {
   return _tx_queue[0].release_at_ms - now_ms;
 }
 
+uint32_t KissModem::getRemainingAckTurnProtectDelayMs(uint32_t now_ms) const {
+  if (!headTxIsData()) return 0;
+  if (_ack_turn_protect_until_ms == 0) return 0;
+  if ((int32_t)(_ack_turn_protect_until_ms - now_ms) <= 0) return 0;
+  return _ack_turn_protect_until_ms - now_ms;
+}
+
 uint32_t KissModem::getRemainingObservedRxBiasMs(uint32_t now_ms) const {
   if (_observed_rx_guard_until_ms == 0) return 0;
   if ((int32_t)(_observed_rx_guard_until_ms - now_ms) <= 0) return 0;
@@ -851,8 +867,14 @@ uint32_t KissModem::getRemainingObservedRxGuardDelayMs(uint32_t now_ms) const {
 uint8_t KissModem::getTxAdmissionDelayReason(uint32_t now_ms) const {
   uint32_t guard_delay_ms = getRemainingChannelGuardDelayMs(now_ms);
   uint32_t release_delay_ms = getRemainingHeadReleaseDelayMs(now_ms);
-  if (release_delay_ms > 0 && release_delay_ms >= guard_delay_ms) {
+  uint32_t ack_turn_delay_ms = getRemainingAckTurnProtectDelayMs(now_ms);
+  if (release_delay_ms > 0 &&
+      release_delay_ms >= guard_delay_ms &&
+      release_delay_ms >= ack_turn_delay_ms) {
     return SCHED_DEFER_RANDOM_BACKOFF;
+  }
+  if (ack_turn_delay_ms > 0 && ack_turn_delay_ms >= guard_delay_ms) {
+    return SCHED_DEFER_OBSERVED_RX;
   }
   if (guard_delay_ms > 0) return SCHED_DEFER_CHANNEL_GUARD;
   return SCHED_DEFER_NONE;
@@ -861,7 +883,9 @@ uint8_t KissModem::getTxAdmissionDelayReason(uint32_t now_ms) const {
 uint32_t KissModem::getRemainingTxAdmissionDelayMs(uint32_t now_ms) const {
   uint32_t guard_delay_ms = getRemainingChannelGuardDelayMs(now_ms);
   uint32_t release_delay_ms = getRemainingHeadReleaseDelayMs(now_ms);
-  return guard_delay_ms > release_delay_ms ? guard_delay_ms : release_delay_ms;
+  uint32_t ack_turn_delay_ms = getRemainingAckTurnProtectDelayMs(now_ms);
+  uint32_t max_delay_ms = guard_delay_ms > release_delay_ms ? guard_delay_ms : release_delay_ms;
+  return max_delay_ms > ack_turn_delay_ms ? max_delay_ms : ack_turn_delay_ms;
 }
 
 uint32_t KissModem::getSchedulerDelayMs(uint32_t now_ms) const {
@@ -946,6 +970,7 @@ void KissModem::resetAdmissionState() {
   _observed_rx_count = 0;
   _observed_rx_guard_until_ms = 0;
   _observed_rx_guard_priority = KISS_TX_DATA_PRIORITY;
+  _ack_turn_protect_until_ms = 0;
   _last_observed_rx_airtime_ms = 0;
   _observed_rx_retreat_count = 0;
   _last_observed_rx_retreat_ms = 0;
@@ -1098,6 +1123,12 @@ void KissModem::onPacketReceived(int8_t snr, int8_t rssi, const uint8_t* packet,
   if ((int32_t)(guard_until_ms - _observed_rx_guard_until_ms) > 0) {
     _observed_rx_guard_until_ms = guard_until_ms;
     _observed_rx_guard_priority = observed_priority;
+  }
+  if (observed_priority >= KISS_TX_DATA_PRIORITY) {
+    uint32_t ack_turn_until_ms = now_ms + KISS_TX_ACK_TURN_PROTECT_MS;
+    if ((int32_t)(ack_turn_until_ms - _ack_turn_protect_until_ms) > 0) {
+      _ack_turn_protect_until_ms = ack_turn_until_ms;
+    }
   }
   applyObservedRxQueueRetreat(now_ms, observed_priority);
 
@@ -1529,7 +1560,7 @@ void KissModem::handleAdmissionFeedback(const uint8_t* data, uint16_t len) {
       break;
     case ADMISSION_FEEDBACK_ACK_TIMEOUT:
       _admission_feedback_failure_count++;
-      increaseFeedbackPressureForPriority(feedback_priority, 2);
+      increaseFeedbackPressureForPriority(feedback_priority, 1);
       increaseDataCongestionScore(1);
       writeHardwareFrame(HW_RESP_OK, nullptr, 0);
       break;
