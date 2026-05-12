@@ -388,7 +388,7 @@ Firmware `1800` also leaves the `Stats` payload unchanged. The reported admissio
 
 Firmware `1900` leaves the `Stats` payload unchanged. Feedback success/failure counters remain global, while message-ID keyed pressure is applied internally per traffic class.
 
-Firmware `2000` leaves the `Stats` payload unchanged. It bounds per-class feedback pressure more tightly, treats ACK-timeout feedback as one pressure step instead of two, and adds a 600 ms data-only ACK-turn protect window after hearing data so queued data does not immediately contend with expected ACK/control traffic. Hosts may see this protect window as an `observed-rx` scheduler defer reason, but no host parsing change is required.
+Firmware `1A00` leaves the `Stats` payload unchanged. It bounds per-class feedback pressure more tightly, treats ACK-timeout feedback as one pressure step instead of two, and adds a 600 ms data-only ACK-turn protect window after hearing data so queued data does not immediately contend with expected ACK/control traffic. Hosts may see this protect window as an `observed-rx` scheduler defer reason, but no host parsing change is required.
 
 ### Cinder Gateway Artifact Publish
 
