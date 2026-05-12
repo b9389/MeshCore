@@ -77,6 +77,7 @@
 #define HW_CMD_GET_EFFECTIVE_POLICY      0x45
 #define HW_CMD_GET_CAPABILITY_STATUS     0x46
 #define HW_CMD_REPORT_ADMISSION_FEEDBACK 0x47
+#define HW_CMD_RESET_ADMISSION_STATE     0x48
 
 /* Response code = command code | 0x80.  Generic / unsolicited use 0xF0+. */
 #define HW_RESP(cmd)             ((cmd) | 0x80)
@@ -103,8 +104,9 @@
 #define HW_ERR_TX_INHIBITED      0x07
 #define HW_ERR_TX_QUEUE_FULL     0x08
 #define HW_ERR_TX_BACKPRESSURE   0x09
+#define HW_ERR_BUSY              0x0A
 
-#define KISS_FIRMWARE_VERSION 14
+#define KISS_FIRMWARE_VERSION 15
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -124,6 +126,7 @@
 #define CINDER_FEATURE_OVERRIDE_CONTROL    0x00000001UL
 #define CINDER_FEATURE_FIRMWARE_DIAGNOSTICS 0x00000040UL
 #define CINDER_FEATURE_ADMISSION_FEEDBACK  0x00000400UL
+#define CINDER_FEATURE_ADMISSION_RESET     0x00000800UL
 #define CINDER_MAX_LOW_RATE_PAYLOAD_BYTES 192
 
 #define ADMISSION_FEEDBACK_DELIVERED   0x01
@@ -295,6 +298,7 @@ class KissModem {
   uint32_t applyBusyBackoffToHead(uint32_t now_ms);
   void setLastDefer(uint8_t reason, uint32_t delay_ms);
   void recordTxDrop(uint8_t reason);
+  void resetAdmissionState();
 
   void handleGetIdentity();
   void handleGetRandom(const uint8_t* data, uint16_t len);
@@ -329,6 +333,7 @@ class KissModem {
   void handleGetEffectivePolicy();
   void handleGetCapabilityStatus();
   void handleAdmissionFeedback(const uint8_t* data, uint16_t len);
+  void handleResetAdmissionState(const uint8_t* data, uint16_t len);
 
   void purgeExpiredOverrides();
   bool parseOverrideTlv(const uint8_t* data, uint16_t len, uint8_t* kind, uint8_t* value, uint32_t* ttl_ms);

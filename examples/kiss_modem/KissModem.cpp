@@ -319,6 +319,9 @@ void KissModem::handleHardwareCommand(uint8_t sub_cmd, const uint8_t* data, uint
     case HW_CMD_REPORT_ADMISSION_FEEDBACK:
       handleAdmissionFeedback(data, len);
       break;
+    case HW_CMD_RESET_ADMISSION_STATE:
+      handleResetAdmissionState(data, len);
+      break;
     default:
       writeHardwareError(HW_ERR_UNKNOWN_CMD);
       break;
@@ -622,6 +625,25 @@ void KissModem::recordTxDrop(uint8_t reason) {
   _admission_reject_count++;
   _last_admission_reason = reason;
   _last_admission_delay_ms = 0;
+}
+
+void KissModem::resetAdmissionState() {
+  _next_tx_allowed_ms = 0;
+  _last_defer_delay_ms = 0;
+  _last_defer_reason = SCHED_DEFER_NONE;
+  _tx_drop_count = 0;
+  _last_drop_reason = SCHED_DEFER_NONE;
+  _admission_accept_count = 0;
+  _admission_defer_count = 0;
+  _admission_backoff_count = 0;
+  _admission_busy_count = 0;
+  _admission_reject_count = 0;
+  _last_admission_delay_ms = 0;
+  _last_admission_reason = SCHED_DEFER_NONE;
+  _data_congestion_score = 0;
+  _admission_feedback_success_count = 0;
+  _admission_feedback_failure_count = 0;
+  _last_admission_feedback = 0;
 }
 
 void KissModem::processTx() {
@@ -1177,6 +1199,21 @@ void KissModem::handleAdmissionFeedback(const uint8_t* data, uint16_t len) {
   }
 }
 
+void KissModem::handleResetAdmissionState(const uint8_t* data, uint16_t len) {
+  (void)data;
+  if (len != 0) {
+    writeHardwareError(HW_ERR_INVALID_LENGTH);
+    return;
+  }
+  if (_tx_state != TX_IDLE || _tx_queue_len > 0) {
+    writeHardwareError(HW_ERR_BUSY);
+    return;
+  }
+
+  resetAdmissionState();
+  writeHardwareFrame(HW_RESP_OK, nullptr, 0);
+}
+
 void KissModem::purgeExpiredOverrides() {
   uint32_t now = millis();
   for (uint8_t i = 0; i < KISS_MAX_OVERRIDES; i++) {
@@ -1358,7 +1395,8 @@ void KissModem::writeCapabilityStatus() {
 
   uint32_t feature_flags = CINDER_FEATURE_OVERRIDE_CONTROL |
                            CINDER_FEATURE_FIRMWARE_DIAGNOSTICS |
-                           CINDER_FEATURE_ADMISSION_FEEDBACK;
+                           CINDER_FEATURE_ADMISSION_FEEDBACK |
+                           CINDER_FEATURE_ADMISSION_RESET;
   uint16_t supported_transports = CINDER_TRANSPORT_LORA | CINDER_TRANSPORT_SERIAL;
   uint16_t max_low_rate_payload_bytes = CINDER_MAX_LOW_RATE_PAYLOAD_BYTES;
   uint16_t max_queue_frames = KISS_TX_QUEUE_CAPACITY;
