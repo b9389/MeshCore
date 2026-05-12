@@ -24,6 +24,7 @@ KissModem::KissModem(Stream& serial, mesh::LocalIdentity& identity, mesh::RNG& r
   _admission_reject_count = 0;
   _last_admission_delay_ms = 0;
   _last_admission_reason = SCHED_DEFER_NONE;
+  _data_congestion_score = 0;
   _txdelay = KISS_DEFAULT_TXDELAY;
   _persistence = KISS_DEFAULT_PERSISTENCE;
   _slottime = KISS_DEFAULT_SLOTTIME;
@@ -69,6 +70,7 @@ void KissModem::begin() {
   _admission_reject_count = 0;
   _last_admission_delay_ms = 0;
   _last_admission_reason = SCHED_DEFER_NONE;
+  _data_congestion_score = 0;
   purgeExpiredOverrides();
 }
 
@@ -473,18 +475,70 @@ uint32_t KissModem::randomDelayMs(uint32_t min_ms, uint32_t max_ms) {
 }
 
 uint32_t KissModem::randomDataAdmissionBackoffMs(uint32_t estimated_airtime_ms) {
-  uint32_t min_ms = KISS_TX_DATA_ADMISSION_BACKOFF_MIN_MS;
-  uint32_t max_ms = KISS_TX_DATA_ADMISSION_BACKOFF_MAX_MS;
-  uint32_t airtime_weighted_max_ms = estimated_airtime_ms * 2;
-  if (airtime_weighted_max_ms > max_ms) max_ms = airtime_weighted_max_ms;
+  uint32_t min_ms = getAdaptiveDataAdmissionBackoffMinMs(estimated_airtime_ms);
+  uint32_t max_ms = getAdaptiveDataAdmissionBackoffMaxMs(estimated_airtime_ms);
   return randomDelayMs(min_ms, max_ms);
 }
 
 uint32_t KissModem::randomDataBusyBackoffMs(uint32_t estimated_airtime_ms) {
   uint32_t min_ms = KISS_TX_DATA_BUSY_BACKOFF_MIN_MS;
-  uint32_t max_ms = KISS_TX_DATA_BUSY_BACKOFF_MAX_MS;
-  if (estimated_airtime_ms > max_ms) max_ms = estimated_airtime_ms;
+  uint32_t max_ms = getAdaptiveDataBusyBackoffMaxMs(estimated_airtime_ms);
   return randomDelayMs(min_ms, max_ms);
+}
+
+uint32_t KissModem::getAdaptiveDataAdmissionBackoffMinMs(uint32_t estimated_airtime_ms) const {
+  uint32_t min_ms = KISS_TX_DATA_ADMISSION_BACKOFF_MIN_MS;
+  uint32_t score_floor_ms = (estimated_airtime_ms / 4) * _data_congestion_score;
+  if (score_floor_ms > min_ms) min_ms = score_floor_ms;
+  if (min_ms > KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS) {
+    min_ms = KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS;
+  }
+  return min_ms;
+}
+
+uint32_t KissModem::getAdaptiveDataAdmissionBackoffMaxMs(uint32_t estimated_airtime_ms) const {
+  uint32_t max_ms = KISS_TX_DATA_ADMISSION_BACKOFF_MAX_MS;
+  uint32_t airtime_weighted_max_ms = estimated_airtime_ms * 2;
+  if (airtime_weighted_max_ms > max_ms) max_ms = airtime_weighted_max_ms;
+  if (max_ms > KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS) {
+    max_ms = KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS;
+  }
+
+  uint32_t score_extension_ms = estimated_airtime_ms * _data_congestion_score;
+  uint32_t remaining_ms = KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS - max_ms;
+  if (score_extension_ms > remaining_ms) max_ms = KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS;
+  else max_ms += score_extension_ms;
+
+  uint32_t min_ms = getAdaptiveDataAdmissionBackoffMinMs(estimated_airtime_ms);
+  return max_ms < min_ms ? min_ms : max_ms;
+}
+
+uint32_t KissModem::getAdaptiveDataBusyBackoffMaxMs(uint32_t estimated_airtime_ms) const {
+  uint32_t max_ms = KISS_TX_DATA_BUSY_BACKOFF_MAX_MS;
+  uint32_t airtime_weighted_max_ms = estimated_airtime_ms * 2;
+  if (airtime_weighted_max_ms > max_ms) max_ms = airtime_weighted_max_ms;
+  if (max_ms > KISS_TX_DATA_BUSY_BACKOFF_CAP_MS) {
+    max_ms = KISS_TX_DATA_BUSY_BACKOFF_CAP_MS;
+  }
+
+  uint32_t score_extension_ms = (estimated_airtime_ms / 2) * _data_congestion_score;
+  uint32_t remaining_ms = KISS_TX_DATA_BUSY_BACKOFF_CAP_MS - max_ms;
+  if (score_extension_ms > remaining_ms) max_ms = KISS_TX_DATA_BUSY_BACKOFF_CAP_MS;
+  else max_ms += score_extension_ms;
+  return max_ms;
+}
+
+void KissModem::increaseDataCongestionScore(uint8_t amount) {
+  if (amount == 0) return;
+  if (_data_congestion_score > KISS_TX_DATA_CONGESTION_SCORE_MAX - amount) {
+    _data_congestion_score = KISS_TX_DATA_CONGESTION_SCORE_MAX;
+  } else {
+    _data_congestion_score += amount;
+  }
+}
+
+void KissModem::decreaseDataCongestionScore() {
+  if (_data_congestion_score > 0) _data_congestion_score--;
 }
 
 uint32_t KissModem::getRemainingChannelGuardDelayMs(uint32_t now_ms) const {
@@ -533,6 +587,7 @@ void KissModem::recordAdmissionEvent(uint8_t reason, uint32_t delay_ms) {
 
 uint32_t KissModem::applyBusyBackoffToHead(uint32_t now_ms) {
   if (_tx_queue_len == 0 || !headTxIsData()) return (uint32_t)_slottime * 10;
+  increaseDataCongestionScore(2);
   uint32_t backoff_ms = randomDataBusyBackoffMs(_tx_queue[0].estimated_airtime_ms);
   uint32_t release_at_ms = now_ms + backoff_ms;
   if ((int32_t)(release_at_ms - _tx_queue[0].release_at_ms) > 0) {
@@ -548,6 +603,11 @@ void KissModem::setLastDefer(uint8_t reason, uint32_t delay_ms) {
 }
 
 void KissModem::recordTxDrop(uint8_t reason) {
+  if (reason == SCHED_DEFER_BACKPRESSURE ||
+      reason == SCHED_DEFER_QUEUE_FULL ||
+      reason == SCHED_DEFER_AIRTIME_FULL) {
+    increaseDataCongestionScore(3);
+  }
   _tx_drop_count++;
   _last_drop_reason = reason;
   _admission_reject_count++;
@@ -661,6 +721,7 @@ void KissModem::processTx() {
 
     case TX_SENDING:
       if (_radio.isSendComplete()) {
+        bool sent_data_frame = headTxIsData();
         _radio.onSendFinished();
         uint32_t finished_ms = millis();
         _last_tx_duration_ms = finished_ms - _tx_started_ms;
@@ -679,6 +740,7 @@ void KissModem::processTx() {
         memcpy(tx_done + 14, &_tx_drop_count, 4);
         tx_done[18] = _last_drop_reason;
         writeHardwareFrame(HW_RESP_TX_DONE, tx_done, sizeof(tx_done));
+        if (sent_data_frame) decreaseDataCongestionScore();
         _tx_state = TX_IDLE;
       }
       break;
@@ -896,11 +958,18 @@ void KissModem::handleGetStats() {
 
   uint32_t rx, tx, errors;
   _getStatsCallback(&rx, &tx, &errors);
-  uint8_t buf[60];
+  uint8_t buf[73];
   uint16_t queue_len = _tx_queue_len;
   uint16_t queue_capacity = KISS_TX_QUEUE_CAPACITY;
   uint32_t next_tx_delay_ms = getSchedulerDelayMs();
   uint32_t airtime_budget_ms = KISS_TX_QUEUE_AIRTIME_BUDGET_MS;
+  uint32_t admission_reference_airtime_ms = _radio.getEstAirtimeFor(KISS_TX_ADMISSION_WINDOW_REFERENCE_BYTES);
+  uint32_t admission_window_min_ms =
+      getAdaptiveDataAdmissionBackoffMinMs(admission_reference_airtime_ms);
+  uint32_t admission_window_max_ms =
+      getAdaptiveDataAdmissionBackoffMaxMs(admission_reference_airtime_ms);
+  uint32_t busy_window_max_ms =
+      getAdaptiveDataBusyBackoffMaxMs(admission_reference_airtime_ms);
   memcpy(buf, &rx, 4);
   memcpy(buf + 4, &tx, 4);
   memcpy(buf + 8, &errors, 4);
@@ -920,6 +989,10 @@ void KissModem::handleGetStats() {
   memcpy(buf + 51, &_admission_reject_count, 4);
   memcpy(buf + 55, &_last_admission_delay_ms, 4);
   buf[59] = _last_admission_reason;
+  buf[60] = _data_congestion_score;
+  memcpy(buf + 61, &admission_window_min_ms, 4);
+  memcpy(buf + 65, &admission_window_max_ms, 4);
+  memcpy(buf + 69, &busy_window_max_ms, 4);
   writeHardwareFrame(HW_RESP(HW_CMD_GET_STATS), buf, sizeof(buf));
 }
 

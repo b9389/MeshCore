@@ -39,6 +39,10 @@
 #define KISS_TX_DATA_ADMISSION_BACKOFF_MAX_MS 4200UL
 #define KISS_TX_DATA_BUSY_BACKOFF_MIN_MS 250UL
 #define KISS_TX_DATA_BUSY_BACKOFF_MAX_MS 2000UL
+#define KISS_TX_DATA_CONGESTION_SCORE_MAX 8
+#define KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS 8000UL
+#define KISS_TX_DATA_BUSY_BACKOFF_CAP_MS 6000UL
+#define KISS_TX_ADMISSION_WINDOW_REFERENCE_BYTES 229
 
 #define HW_CMD_GET_IDENTITY      0x01
 #define HW_CMD_GET_RANDOM        0x02
@@ -99,7 +103,7 @@
 #define HW_ERR_TX_QUEUE_FULL     0x08
 #define HW_ERR_TX_BACKPRESSURE   0x09
 
-#define KISS_FIRMWARE_VERSION 12
+#define KISS_FIRMWARE_VERSION 13
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -218,6 +222,7 @@ class KissModem {
   uint32_t _admission_reject_count;
   uint32_t _last_admission_delay_ms;
   uint8_t _last_admission_reason;
+  uint8_t _data_congestion_score;
 
   uint8_t _txdelay;
   uint8_t _persistence;
@@ -266,6 +271,11 @@ class KissModem {
   uint32_t randomDelayMs(uint32_t min_ms, uint32_t max_ms);
   uint32_t randomDataAdmissionBackoffMs(uint32_t estimated_airtime_ms);
   uint32_t randomDataBusyBackoffMs(uint32_t estimated_airtime_ms);
+  uint32_t getAdaptiveDataAdmissionBackoffMinMs(uint32_t estimated_airtime_ms) const;
+  uint32_t getAdaptiveDataAdmissionBackoffMaxMs(uint32_t estimated_airtime_ms) const;
+  uint32_t getAdaptiveDataBusyBackoffMaxMs(uint32_t estimated_airtime_ms) const;
+  void increaseDataCongestionScore(uint8_t amount);
+  void decreaseDataCongestionScore();
   uint32_t getRemainingChannelGuardDelayMs(uint32_t now_ms) const;
   uint32_t getRemainingHeadReleaseDelayMs(uint32_t now_ms) const;
   uint8_t getTxAdmissionDelayReason(uint32_t now_ms) const;

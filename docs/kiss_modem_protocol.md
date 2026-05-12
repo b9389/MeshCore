@@ -69,6 +69,8 @@ The TNC implements p-persistent CSMA for half-duplex operation:
 
 Firmware `0B00` also adds firmware-owned low-rate data admission. ACK/control frames bypass this gate, but low-priority data frames receive a randomized release time before CSMA. If the radio observes a busy channel while data is at the head of the queue, the data frame retreats with another randomized busy-channel backoff. This does not create a hidden-terminal solution by itself, but it keeps independent hosts from immediately colliding after each board's local queue says it has capacity.
 
+Firmware `0D00` makes that data gate adaptive. Busy-channel retreats and backpressure increase a bounded local congestion score, which widens future randomized data-admission and busy-retreat windows. Successful data transmissions decay the score. The score is local-only and does not require a coordinator; hosts should treat it as a self-throttle signal, not as proof of end-to-end delivery.
+
 In full-duplex mode, CSMA is bypassed and packets transmit after TXDELAY.
 
 ## SetHardware Extensions (0x06)
@@ -199,7 +201,7 @@ All values little-endian.
 | Version | 1 byte | Firmware version |
 | Reserved | 1 byte | Always 0 |
 
-Version `3` adds extended `Stats` and `TxDone` telemetry while retaining compatibility with legacy host parsers. Version `4` adds Cinder `CapabilityStatus` so hosts can gate protocol features on firmware-declared support instead of static board assumptions. Versions `5` through `7` add the Cinder bench priority queue, scheduler guard/defer diagnostics, and queued-airtime/drop telemetry. Version `8` adds low-priority/data backpressure before the four-frame queue reaches full scale. Version `9` keeps scheduler defer and drop reasons separated in `TxDone` telemetry. Version `10` tightens data backpressure when ACK, route, advert, or capability control traffic is already queued so low-rate data cannot consume control headroom during overload. Version `11` (`0B00`) adds randomized data admission/backoff and admission counters.
+Version `3` adds extended `Stats` and `TxDone` telemetry while retaining compatibility with legacy host parsers. Version `4` adds Cinder `CapabilityStatus` so hosts can gate protocol features on firmware-declared support instead of static board assumptions. Versions `5` through `7` add the Cinder bench priority queue, scheduler guard/defer diagnostics, and queued-airtime/drop telemetry. Version `8` adds low-priority/data backpressure before the four-frame queue reaches full scale. Version `9` keeps scheduler defer and drop reasons separated in `TxDone` telemetry. Version `10` tightens data backpressure when ACK, route, advert, or capability control traffic is already queued so low-rate data cannot consume control headroom during overload. Version `11` (`0B00`) adds randomized data admission/backoff and admission counters. Version `12` (`0C00`) fixes startup TX-power reporting. Version `13` (`0D00`) adds adaptive local data-admission congestion scoring and optional stats fields for the current admission windows.
 
 ### CapabilityStatus (CapabilityStatus response)
 
@@ -268,6 +270,10 @@ All values little-endian.
 | AdmissionRejectCount | 4 bytes | Optional cumulative admission rejects/backpressure decisions |
 | LastAdmissionDelayMs | 4 bytes | Optional last randomized admission delay |
 | LastAdmissionReason | 1 byte | Optional last admission reason |
+| AdmissionCongestionScore | 1 byte | Optional local data-admission congestion score, `0` through `8` |
+| AdmissionWindowMinMs | 4 bytes | Optional current randomized data-admission window minimum for a max-payload bench frame |
+| AdmissionWindowMaxMs | 4 bytes | Optional current randomized data-admission window maximum for a max-payload bench frame |
+| AdmissionBusyWindowMaxMs | 4 bytes | Optional current busy-channel retreat window maximum for a max-payload bench frame |
 
 The current Cinder bench KISS modem uses a four-frame priority TX queue. Hosts should continue to accept the legacy 12-byte payload without queue fields.
 
@@ -289,6 +295,8 @@ All multi-byte values are little-endian.
 Hosts should continue to accept the legacy one-byte payload. Firmware `0900` and later append drop counters after the defer fields so a successful TX no longer inherits an unrelated `backpressure` or `queue-full` reason from a later rejected frame.
 
 Firmware `0C00` makes `GetTxPower` report the board's configured startup chip power before any host-side `SetTxPower` command. Earlier experimental builds only reported the last KISS-set value and could return `0` immediately after boot even when the radio had initialized at the board default.
+
+Firmware `0D00` appends the adaptive data-admission congestion score and current backoff windows to `Stats`. Legacy hosts can ignore these trailing bytes.
 
 ### Cinder Gateway Artifact Publish
 
