@@ -41,6 +41,10 @@ KissModem::KissModem(Stream& serial, mesh::LocalIdentity& identity, mesh::RNG& r
   _observed_rx_guard_priority = KISS_TX_DATA_PRIORITY;
   _ack_turn_protect_until_ms = 0;
   clearNeighborBusy();
+  _neighbor_busy_observed_count = 0;
+  _neighbor_busy_defer_count = 0;
+  _last_neighbor_busy_delay_ms = 0;
+  _ack_guard_bypass_count = 0;
   _last_observed_rx_airtime_ms = 0;
   _observed_rx_retreat_count = 0;
   _last_observed_rx_retreat_ms = 0;
@@ -106,6 +110,10 @@ void KissModem::begin() {
   _observed_rx_guard_priority = KISS_TX_DATA_PRIORITY;
   _ack_turn_protect_until_ms = 0;
   clearNeighborBusy();
+  _neighbor_busy_observed_count = 0;
+  _neighbor_busy_defer_count = 0;
+  _last_neighbor_busy_delay_ms = 0;
+  _ack_guard_bypass_count = 0;
   _last_observed_rx_airtime_ms = 0;
   _observed_rx_retreat_count = 0;
   _last_observed_rx_retreat_ms = 0;
@@ -411,6 +419,7 @@ bool KissModem::enqueueTx(const uint8_t* data, uint16_t len) {
   uint8_t priority = getTxPriority(data, len);
   uint32_t estimated_airtime_ms = _radio.getEstAirtimeFor(len);
   uint8_t first_reorderable = (_tx_state == TX_SENDING) ? 1 : 0;
+  bool had_queued_ack = hasQueuedAckFrame(first_reorderable);
   uint32_t release_at_ms = millis();
 
   if (shouldBackpressureTx(priority, estimated_airtime_ms, first_reorderable)) {
@@ -459,6 +468,11 @@ bool KissModem::enqueueTx(const uint8_t* data, uint16_t len) {
   _tx_queue_len++;
   _queued_airtime_ms += estimated_airtime_ms;
   _admission_accept_count++;
+  if (priority == 0 &&
+      !had_queued_ack &&
+      getRawRemainingChannelGuardDelayMs(release_at_ms) > 0) {
+    _ack_guard_bypass_count++;
+  }
   return true;
 }
 
@@ -503,6 +517,13 @@ bool KissModem::queuedAirtimeWouldFit(uint32_t additional_airtime_ms) const {
 bool KissModem::hasQueuedControlFrame(uint8_t first_reorderable) const {
   for (uint8_t i = first_reorderable; i < _tx_queue_len; i++) {
     if (_tx_queue[i].priority <= KISS_TX_CONTROL_PRIORITY_MAX) return true;
+  }
+  return false;
+}
+
+bool KissModem::hasQueuedAckFrame(uint8_t first_reorderable) const {
+  for (uint8_t i = first_reorderable; i < _tx_queue_len; i++) {
+    if (_tx_queue[i].priority == 0) return true;
   }
   return false;
 }
@@ -552,6 +573,10 @@ uint8_t KissModem::getTxDoneDeferReason(uint32_t next_tx_delay_ms) const {
 
 bool KissModem::headTxIsData() const {
   return _tx_queue_len > 0 && _tx_queue[0].priority >= KISS_TX_DATA_PRIORITY;
+}
+
+bool KissModem::headTxIsAckFrame() const {
+  return _tx_queue_len > 0 && _tx_queue[0].priority == 0;
 }
 
 bool KissModem::parseNativeDataMessageId(
@@ -670,6 +695,7 @@ bool KissModem::noteObservedNeighborBusy(
   if (parseNativeDataSourceHandle(data, len, source_handle)) {
     rememberNeighborBusy(source_handle, busy_until_ms);
   }
+  _neighbor_busy_observed_count++;
   return true;
 }
 
@@ -946,10 +972,17 @@ void KissModem::decreaseDataCongestionScoreForPriority(uint8_t priority) {
   }
 }
 
-uint32_t KissModem::getRemainingChannelGuardDelayMs(uint32_t now_ms) const {
+uint32_t KissModem::getRawRemainingChannelGuardDelayMs(uint32_t now_ms) const {
   if (_next_tx_allowed_ms == 0) return 0;
   if ((int32_t)(_next_tx_allowed_ms - now_ms) <= 0) return 0;
   return _next_tx_allowed_ms - now_ms;
+}
+
+uint32_t KissModem::getRemainingChannelGuardDelayMs(uint32_t now_ms) const {
+  uint32_t guard_delay_ms = getRawRemainingChannelGuardDelayMs(now_ms);
+  if (guard_delay_ms == 0) return 0;
+  if (headTxIsAckFrame()) return 0;
+  return guard_delay_ms;
 }
 
 uint32_t KissModem::getRemainingHeadReleaseDelayMs(uint32_t now_ms) const {
@@ -1008,7 +1041,7 @@ uint8_t KissModem::getTxAdmissionDelayReason(uint32_t now_ms) const {
     return SCHED_DEFER_OBSERVED_RX;
   }
   if (neighbor_busy_delay_ms > 0 && neighbor_busy_delay_ms >= guard_delay_ms) {
-    return SCHED_DEFER_OBSERVED_RX;
+    return SCHED_DEFER_NEIGHBOR_BUSY;
   }
   if (guard_delay_ms > 0) return SCHED_DEFER_CHANNEL_GUARD;
   return SCHED_DEFER_NONE;
@@ -1053,6 +1086,13 @@ uint32_t KissModem::applyBusyBackoffToHead(uint32_t now_ms) {
 }
 
 void KissModem::setLastDefer(uint8_t reason, uint32_t delay_ms) {
+  if (reason == SCHED_DEFER_NEIGHBOR_BUSY &&
+      _last_defer_reason != SCHED_DEFER_NEIGHBOR_BUSY) {
+    _neighbor_busy_defer_count++;
+  }
+  if (reason == SCHED_DEFER_NEIGHBOR_BUSY) {
+    _last_neighbor_busy_delay_ms = delay_ms;
+  }
   _last_defer_reason = reason;
   _last_defer_delay_ms = delay_ms;
 }
@@ -1110,6 +1150,10 @@ void KissModem::resetAdmissionState() {
   _observed_rx_guard_priority = KISS_TX_DATA_PRIORITY;
   _ack_turn_protect_until_ms = 0;
   clearNeighborBusy();
+  _neighbor_busy_observed_count = 0;
+  _neighbor_busy_defer_count = 0;
+  _last_neighbor_busy_delay_ms = 0;
+  _ack_guard_bypass_count = 0;
   _last_observed_rx_airtime_ms = 0;
   _observed_rx_retreat_count = 0;
   _last_observed_rx_retreat_ms = 0;
@@ -1230,6 +1274,9 @@ void KissModem::processTx() {
         _last_tx_duration_ms = finished_ms - _tx_started_ms;
         _next_tx_allowed_ms = finished_ms + KISS_TX_CHANNEL_GUARD_MS;
         popQueuedTx();
+        if (headTxIsAckFrame() && getRawRemainingChannelGuardDelayMs(finished_ms) > 0) {
+          _ack_guard_bypass_count++;
+        }
         uint32_t next_tx_delay_ms = getRemainingTxAdmissionDelayMs(finished_ms);
         uint8_t tx_done[19];
         tx_done[0] = 0x01;
@@ -1485,7 +1532,7 @@ void KissModem::handleGetStats() {
 
   uint32_t rx, tx, errors;
   _getStatsCallback(&rx, &tx, &errors);
-  uint8_t buf[102];
+  uint8_t buf[118];
   uint16_t queue_len = _tx_queue_len;
   uint16_t queue_capacity = KISS_TX_QUEUE_CAPACITY;
   uint32_t next_tx_delay_ms = getSchedulerDelayMs();
@@ -1529,6 +1576,10 @@ void KissModem::handleGetStats() {
   memcpy(buf + 90, &_last_observed_rx_airtime_ms, 4);
   memcpy(buf + 94, &_observed_rx_retreat_count, 4);
   memcpy(buf + 98, &_last_observed_rx_retreat_ms, 4);
+  memcpy(buf + 102, &_neighbor_busy_observed_count, 4);
+  memcpy(buf + 106, &_neighbor_busy_defer_count, 4);
+  memcpy(buf + 110, &_last_neighbor_busy_delay_ms, 4);
+  memcpy(buf + 114, &_ack_guard_bypass_count, 4);
   writeHardwareFrame(HW_RESP(HW_CMD_GET_STATS), buf, sizeof(buf));
 }
 
@@ -2060,6 +2111,8 @@ const char* KissModem::getLastDeferReasonLabel() const {
       return "backoff";
     case SCHED_DEFER_OBSERVED_RX:
       return "rx-guard";
+    case SCHED_DEFER_NEIGHBOR_BUSY:
+      return "nb-busy";
     default:
       return "unknown";
   }

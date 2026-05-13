@@ -132,7 +132,7 @@
 #define HW_ERR_TX_BACKPRESSURE   0x09
 #define HW_ERR_BUSY              0x0A
 
-#define KISS_FIRMWARE_VERSION 28
+#define KISS_FIRMWARE_VERSION 29
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -144,6 +144,7 @@
 #define SCHED_DEFER_BACKPRESSURE  0x07
 #define SCHED_DEFER_RANDOM_BACKOFF 0x08
 #define SCHED_DEFER_OBSERVED_RX   0x09
+#define SCHED_DEFER_NEIGHBOR_BUSY 0x0A
 
 #define CAPABILITY_STATUS_VERSION 1
 #define CINDER_NATIVE_PROTOCOL_VERSION 1
@@ -316,6 +317,10 @@ class KissModem {
   uint8_t _observed_rx_guard_priority;
   uint32_t _ack_turn_protect_until_ms;
   NeighborBusyEntry _neighbor_busy[KISS_TX_NEIGHBOR_BUSY_CAPACITY];
+  uint32_t _neighbor_busy_observed_count;
+  uint32_t _neighbor_busy_defer_count;
+  uint32_t _last_neighbor_busy_delay_ms;
+  uint32_t _ack_guard_bypass_count;
   uint32_t _last_observed_rx_airtime_ms;
   uint32_t _observed_rx_retreat_count;
   uint32_t _last_observed_rx_retreat_ms;
@@ -363,7 +368,9 @@ class KissModem {
       uint8_t first_reorderable) const;
   uint8_t getTxRejectErrorCode() const;
   uint8_t getTxDoneDeferReason(uint32_t next_tx_delay_ms) const;
+  bool headTxIsAckFrame() const;
   bool headTxIsData() const;
+  bool hasQueuedAckFrame(uint8_t first_reorderable) const;
   bool parseNativeDataMessageId(const uint8_t* data, uint16_t len, uint64_t* message_id) const;
   bool parseNativeDataDestinationHandle(const uint8_t* data, uint16_t len,
       uint8_t* destination_handle) const;
@@ -399,6 +406,7 @@ class KissModem {
   void decayDataCongestionScore(uint32_t now_ms);
   void increaseDataCongestionScoreForPriority(uint8_t priority, uint8_t amount);
   void decreaseDataCongestionScoreForPriority(uint8_t priority);
+  uint32_t getRawRemainingChannelGuardDelayMs(uint32_t now_ms) const;
   uint32_t getRemainingChannelGuardDelayMs(uint32_t now_ms) const;
   uint32_t getRemainingHeadReleaseDelayMs(uint32_t now_ms) const;
   uint32_t getRemainingAckTurnProtectDelayMs(uint32_t now_ms) const;
