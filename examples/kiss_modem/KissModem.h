@@ -62,6 +62,7 @@
 #define KISS_TX_FEEDBACK_HISTORY_CAPACITY 16
 #define KISS_TX_NEIGHBOR_BUSY_CAPACITY 4
 #define KISS_TX_NEIGHBOR_BUSY_PROTECT_MS 600UL
+#define KISS_TX_RECV_ERROR_PRESSURE_SAMPLE_MS 250UL
 #define CINDER_NATIVE_HANDLE_LEN 8
 #define KISS_ADMISSION_CONFIG_VERSION_V1 1
 #define KISS_ADMISSION_CONFIG_VERSION 2
@@ -132,7 +133,7 @@
 #define HW_ERR_TX_BACKPRESSURE   0x09
 #define HW_ERR_BUSY              0x0A
 
-#define KISS_FIRMWARE_VERSION 32
+#define KISS_FIRMWARE_VERSION 33
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -332,6 +333,11 @@ class KissModem {
   uint32_t _last_observed_rx_airtime_ms;
   uint32_t _observed_rx_retreat_count;
   uint32_t _last_observed_rx_retreat_ms;
+  uint32_t _next_recv_error_pressure_sample_ms;
+  uint32_t _last_sampled_recv_crc_error_count;
+  uint32_t _last_sampled_recv_header_error_count;
+  uint32_t _last_sampled_recv_other_error_count;
+  bool _has_recv_error_pressure_sample;
 
   uint8_t _txdelay;
   uint8_t _persistence;
@@ -394,6 +400,9 @@ class KissModem {
   void rememberNeighborBusy(const uint8_t* handle, uint32_t busy_until_ms);
   bool noteObservedNeighborBusy(const uint8_t* data, uint16_t len, uint32_t now_ms,
       uint32_t observed_airtime_ms);
+  void clearReceiveErrorPressureSample();
+  void sampleReceiveErrorPressure(uint32_t now_ms);
+  void increaseChannelCongestionScore(uint8_t amount);
   uint8_t getFeedbackPressureForPriority(uint8_t priority) const;
   uint8_t getFeedbackPressureMaxForPriority(uint8_t priority) const;
   void increaseFeedbackPressureForPriority(uint8_t priority, uint8_t amount);

@@ -48,6 +48,7 @@ KissModem::KissModem(Stream& serial, mesh::LocalIdentity& identity, mesh::RNG& r
   _last_observed_rx_airtime_ms = 0;
   _observed_rx_retreat_count = 0;
   _last_observed_rx_retreat_ms = 0;
+  clearReceiveErrorPressureSample();
   _txdelay = KISS_DEFAULT_TXDELAY;
   _persistence = KISS_DEFAULT_PERSISTENCE;
   _slottime = KISS_DEFAULT_SLOTTIME;
@@ -117,6 +118,7 @@ void KissModem::begin() {
   _last_observed_rx_airtime_ms = 0;
   _observed_rx_retreat_count = 0;
   _last_observed_rx_retreat_ms = 0;
+  clearReceiveErrorPressureSample();
   purgeExpiredOverrides();
 }
 
@@ -157,7 +159,9 @@ void KissModem::writeHardwareError(uint8_t error_code) {
 
 void KissModem::loop() {
   purgeExpiredOverrides();
-  decayDataCongestionScore(millis());
+  uint32_t now_ms = millis();
+  decayDataCongestionScore(now_ms);
+  sampleReceiveErrorPressure(now_ms);
 
   while (_serial.available()) {
     uint8_t b = _serial.read();
@@ -714,6 +718,76 @@ bool KissModem::noteObservedNeighborBusy(
   return true;
 }
 
+void KissModem::clearReceiveErrorPressureSample() {
+  _next_recv_error_pressure_sample_ms = 0;
+  _last_sampled_recv_crc_error_count = 0;
+  _last_sampled_recv_header_error_count = 0;
+  _last_sampled_recv_other_error_count = 0;
+  _has_recv_error_pressure_sample = false;
+}
+
+void KissModem::sampleReceiveErrorPressure(uint32_t now_ms) {
+  if (!_getStatsCallback) return;
+  if (_next_recv_error_pressure_sample_ms != 0 &&
+      (int32_t)(_next_recv_error_pressure_sample_ms - now_ms) > 0) {
+    return;
+  }
+  _next_recv_error_pressure_sample_ms =
+      now_ms + KISS_TX_RECV_ERROR_PRESSURE_SAMPLE_MS;
+
+  uint32_t rx, tx, errors, start_recv_error_count;
+  uint32_t recv_crc_error_count, recv_header_error_count, recv_other_error_count;
+  int16_t last_recv_error_code, last_start_recv_error_code;
+  uint16_t last_recv_error_len;
+  _getStatsCallback(&rx, &tx, &errors, &last_recv_error_code, &last_recv_error_len,
+                    &last_start_recv_error_code, &start_recv_error_count,
+                    &recv_crc_error_count, &recv_header_error_count,
+                    &recv_other_error_count);
+  (void)rx;
+  (void)tx;
+  (void)errors;
+  (void)start_recv_error_count;
+  (void)last_recv_error_code;
+  (void)last_recv_error_len;
+  (void)last_start_recv_error_code;
+
+  if (!_has_recv_error_pressure_sample) {
+    _last_sampled_recv_crc_error_count = recv_crc_error_count;
+    _last_sampled_recv_header_error_count = recv_header_error_count;
+    _last_sampled_recv_other_error_count = recv_other_error_count;
+    _has_recv_error_pressure_sample = true;
+    return;
+  }
+
+  uint32_t crc_delta = recv_crc_error_count >= _last_sampled_recv_crc_error_count
+      ? recv_crc_error_count - _last_sampled_recv_crc_error_count
+      : 0;
+  uint32_t header_delta = recv_header_error_count >= _last_sampled_recv_header_error_count
+      ? recv_header_error_count - _last_sampled_recv_header_error_count
+      : 0;
+  uint32_t other_delta = recv_other_error_count >= _last_sampled_recv_other_error_count
+      ? recv_other_error_count - _last_sampled_recv_other_error_count
+      : 0;
+
+  _last_sampled_recv_crc_error_count = recv_crc_error_count;
+  _last_sampled_recv_header_error_count = recv_header_error_count;
+  _last_sampled_recv_other_error_count = recv_other_error_count;
+
+  uint32_t strong_error_delta = crc_delta + header_delta;
+  if (strong_error_delta > 0) {
+    increaseChannelCongestionScore(strong_error_delta > 1 ? 2 : 1);
+  }
+  if (other_delta > 0) {
+    increaseChannelCongestionScore(1);
+  }
+}
+
+void KissModem::increaseChannelCongestionScore(uint8_t amount) {
+  increaseDataCongestionScoreForPriority(KISS_TX_DATA_PRIORITY, amount);
+  increaseDataCongestionScoreForPriority(KISS_TX_TELEMETRY_PRIORITY, amount);
+  increaseDataCongestionScoreForPriority(KISS_TX_BULK_PRIORITY, amount);
+}
+
 uint8_t KissModem::getFeedbackPressureForPriority(uint8_t priority) const {
   if (priority >= KISS_TX_BULK_PRIORITY) return _bulk_feedback_pressure;
   if (priority >= KISS_TX_TELEMETRY_PRIORITY) return _telemetry_feedback_pressure;
@@ -1178,6 +1252,7 @@ void KissModem::resetAdmissionState() {
   _last_observed_rx_airtime_ms = 0;
   _observed_rx_retreat_count = 0;
   _last_observed_rx_retreat_ms = 0;
+  clearReceiveErrorPressureSample();
 }
 
 void KissModem::processTx() {
@@ -1786,11 +1861,13 @@ void KissModem::handleAdmissionFeedback(const uint8_t* data, uint16_t len) {
     case ADMISSION_FEEDBACK_LOST:
       _admission_feedback_failure_count++;
       increaseFeedbackPressureForPriority(feedback_priority, 1);
+      increaseDataCongestionScoreForPriority(feedback_priority, 1);
       writeHardwareFrame(HW_RESP_OK, nullptr, 0);
       break;
     case ADMISSION_FEEDBACK_ACK_TIMEOUT:
       _admission_feedback_failure_count++;
       increaseFeedbackPressureForPriority(feedback_priority, 1);
+      increaseDataCongestionScoreForPriority(feedback_priority, 1);
       writeHardwareFrame(HW_RESP_OK, nullptr, 0);
       break;
     default:
