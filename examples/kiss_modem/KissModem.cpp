@@ -1861,13 +1861,11 @@ void KissModem::handleAdmissionFeedback(const uint8_t* data, uint16_t len) {
     case ADMISSION_FEEDBACK_LOST:
       _admission_feedback_failure_count++;
       increaseFeedbackPressureForPriority(feedback_priority, 1);
-      increaseDataCongestionScoreForPriority(feedback_priority, 1);
       writeHardwareFrame(HW_RESP_OK, nullptr, 0);
       break;
     case ADMISSION_FEEDBACK_ACK_TIMEOUT:
       _admission_feedback_failure_count++;
       increaseFeedbackPressureForPriority(feedback_priority, 1);
-      increaseDataCongestionScoreForPriority(feedback_priority, 1);
       writeHardwareFrame(HW_RESP_OK, nullptr, 0);
       break;
     default:
