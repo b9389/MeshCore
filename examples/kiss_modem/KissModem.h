@@ -59,7 +59,7 @@
 #define KISS_TX_DATA_BUSY_BACKOFF_CAP_MS 6000UL
 #define KISS_TX_ADMISSION_WINDOW_REFERENCE_BYTES 229
 #define KISS_TX_ACK_TURN_PROTECT_MS 600UL
-#define KISS_TX_FEEDBACK_HISTORY_CAPACITY 8
+#define KISS_TX_FEEDBACK_HISTORY_CAPACITY 16
 #define KISS_TX_NEIGHBOR_BUSY_CAPACITY 4
 #define KISS_TX_NEIGHBOR_BUSY_PROTECT_MS 600UL
 #define CINDER_NATIVE_HANDLE_LEN 8
@@ -132,7 +132,7 @@
 #define HW_ERR_TX_BACKPRESSURE   0x09
 #define HW_ERR_BUSY              0x0A
 
-#define KISS_FIRMWARE_VERSION 30
+#define KISS_FIRMWARE_VERSION 31
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -246,6 +246,7 @@ struct TxQueueEntry {
   uint32_t release_at_ms;
   bool has_message_id;
   uint64_t message_id;
+  bool is_retry;
   bool has_destination_handle;
   uint8_t destination_handle[CINDER_NATIVE_HANDLE_LEN];
 };
@@ -384,6 +385,7 @@ class KissModem {
   bool handlesEqual(const uint8_t* a, const uint8_t* b) const;
   void clearFeedbackHistory();
   void rememberSentDataFeedback(uint64_t message_id, uint8_t priority);
+  bool hasSentDataFeedback(uint64_t message_id) const;
   uint8_t lookupFeedbackPriority(uint64_t message_id) const;
   void clearNeighborBusy();
   void rememberNeighborBusy(const uint8_t* handle, uint32_t busy_until_ms);
@@ -396,16 +398,21 @@ class KissModem {
   uint8_t getCongestionScoreForPriority(uint8_t priority) const;
   bool hasCongestionScore() const;
   uint32_t randomDelayMs(uint32_t min_ms, uint32_t max_ms);
-  uint32_t randomDataAdmissionBackoffMs(uint8_t priority, uint32_t estimated_airtime_ms);
-  uint32_t randomDataBusyBackoffMs(uint8_t priority, uint32_t estimated_airtime_ms);
+  uint32_t randomDataAdmissionBackoffMs(uint8_t priority, uint32_t estimated_airtime_ms,
+      bool retry_context);
+  uint32_t randomDataBusyBackoffMs(uint8_t priority, uint32_t estimated_airtime_ms,
+      bool retry_context);
   uint32_t randomObservedRxRetreatMs(uint32_t now_ms);
   void recordObservedRxRetreat(uint32_t retreat_ms);
   void applyObservedRxQueueRetreat(uint32_t now_ms, uint8_t observed_priority);
   uint32_t scaledAirtimeMs(uint32_t estimated_airtime_ms, uint8_t multiplier) const;
   uint32_t getClassAdmissionBaseMaxMs(uint8_t priority, uint32_t estimated_airtime_ms) const;
-  uint32_t getAdaptiveDataAdmissionBackoffMinMs(uint8_t priority, uint32_t estimated_airtime_ms) const;
-  uint32_t getAdaptiveDataAdmissionBackoffMaxMs(uint8_t priority, uint32_t estimated_airtime_ms) const;
-  uint32_t getAdaptiveDataBusyBackoffMaxMs(uint8_t priority, uint32_t estimated_airtime_ms) const;
+  uint32_t getAdaptiveDataAdmissionBackoffMinMs(uint8_t priority, uint32_t estimated_airtime_ms,
+      bool retry_context) const;
+  uint32_t getAdaptiveDataAdmissionBackoffMaxMs(uint8_t priority, uint32_t estimated_airtime_ms,
+      bool retry_context) const;
+  uint32_t getAdaptiveDataBusyBackoffMaxMs(uint8_t priority, uint32_t estimated_airtime_ms,
+      bool retry_context) const;
   uint32_t getObservedRxGuardMs(uint32_t estimated_airtime_ms) const;
   void decayDataCongestionScore(uint32_t now_ms);
   void increaseDataCongestionScoreForPriority(uint8_t priority, uint8_t amount);
