@@ -40,6 +40,7 @@ KissModem::KissModem(Stream& serial, mesh::LocalIdentity& identity, mesh::RNG& r
   _observed_rx_guard_until_ms = 0;
   _observed_rx_guard_priority = KISS_TX_DATA_PRIORITY;
   _ack_turn_protect_until_ms = 0;
+  clearNeighborBusy();
   _last_observed_rx_airtime_ms = 0;
   _observed_rx_retreat_count = 0;
   _last_observed_rx_retreat_ms = 0;
@@ -104,6 +105,7 @@ void KissModem::begin() {
   _observed_rx_guard_until_ms = 0;
   _observed_rx_guard_priority = KISS_TX_DATA_PRIORITY;
   _ack_turn_protect_until_ms = 0;
+  clearNeighborBusy();
   _last_observed_rx_airtime_ms = 0;
   _observed_rx_retreat_count = 0;
   _last_observed_rx_retreat_ms = 0;
@@ -445,6 +447,9 @@ bool KissModem::enqueueTx(const uint8_t* data, uint16_t len) {
   _tx_queue[insert_index].estimated_airtime_ms = estimated_airtime_ms;
   _tx_queue[insert_index].has_message_id =
       parseNativeDataMessageId(data, len, &_tx_queue[insert_index].message_id);
+  _tx_queue[insert_index].has_destination_handle =
+      parseNativeDataDestinationHandle(
+          data, len, _tx_queue[insert_index].destination_handle);
   if (priority >= KISS_TX_DATA_PRIORITY) {
     uint32_t backoff_ms = randomDataAdmissionBackoffMs(priority, estimated_airtime_ms);
     release_at_ms += backoff_ms;
@@ -552,11 +557,7 @@ bool KissModem::headTxIsData() const {
 bool KissModem::parseNativeDataMessageId(
     const uint8_t* data, uint16_t len, uint64_t* message_id) const {
   if (message_id == nullptr || len < 11) return false;
-  if (data[0] != CINDER_NATIVE_PROTOCOL_VERSION) return false;
-  if (data[1] != CINDER_NATIVE_PACKET_DATA_DIRECT &&
-      data[1] != CINDER_NATIVE_PACKET_DATA_GROUP) {
-    return false;
-  }
+  if (!isNativeDataFrame(data, len)) return false;
 
   uint64_t value = 0;
   for (uint8_t i = 0; i < 8; i++) {
@@ -564,6 +565,34 @@ bool KissModem::parseNativeDataMessageId(
   }
   *message_id = value;
   return true;
+}
+
+bool KissModem::parseNativeDataDestinationHandle(
+    const uint8_t* data, uint16_t len, uint8_t* destination_handle) const {
+  if (destination_handle == nullptr || len < 19) return false;
+  if (!isNativeDataFrame(data, len)) return false;
+  memcpy(destination_handle, data + 11, CINDER_NATIVE_HANDLE_LEN);
+  return true;
+}
+
+bool KissModem::parseNativeDataSourceHandle(
+    const uint8_t* data, uint16_t len, uint8_t* source_handle) const {
+  if (source_handle == nullptr || len < 20) return false;
+  if (!isNativeDataFrame(data, len)) return false;
+  if (data[19] != 1 || len < 28) return false;
+  memcpy(source_handle, data + 20, CINDER_NATIVE_HANDLE_LEN);
+  return true;
+}
+
+bool KissModem::isNativeDataFrame(const uint8_t* data, uint16_t len) const {
+  if (data == nullptr || len < 3) return false;
+  if (data[0] != CINDER_NATIVE_PROTOCOL_VERSION) return false;
+  return data[1] == CINDER_NATIVE_PACKET_DATA_DIRECT ||
+      data[1] == CINDER_NATIVE_PACKET_DATA_GROUP;
+}
+
+bool KissModem::handlesEqual(const uint8_t* a, const uint8_t* b) const {
+  return memcmp(a, b, CINDER_NATIVE_HANDLE_LEN) == 0;
 }
 
 void KissModem::clearFeedbackHistory() {
@@ -586,6 +615,62 @@ uint8_t KissModem::lookupFeedbackPriority(uint64_t message_id) const {
     }
   }
   return KISS_TX_DATA_PRIORITY;
+}
+
+void KissModem::clearNeighborBusy() {
+  for (uint8_t i = 0; i < KISS_TX_NEIGHBOR_BUSY_CAPACITY; i++) {
+    _neighbor_busy[i] = {false, {0}, 0};
+  }
+}
+
+void KissModem::rememberNeighborBusy(const uint8_t* handle, uint32_t busy_until_ms) {
+  if (handle == nullptr) return;
+
+  int8_t free_candidate = -1;
+  int8_t oldest_candidate = -1;
+  uint32_t earliest_until_ms = UINT32_MAX;
+  uint32_t now_ms = millis();
+  for (uint8_t i = 0; i < KISS_TX_NEIGHBOR_BUSY_CAPACITY; i++) {
+    if (_neighbor_busy[i].active && handlesEqual(_neighbor_busy[i].handle, handle)) {
+      if ((int32_t)(busy_until_ms - _neighbor_busy[i].busy_until_ms) > 0) {
+        _neighbor_busy[i].busy_until_ms = busy_until_ms;
+      }
+      return;
+    }
+    if (!_neighbor_busy[i].active ||
+        (int32_t)(_neighbor_busy[i].busy_until_ms - now_ms) <= 0) {
+      if (free_candidate < 0) free_candidate = i;
+      continue;
+    }
+    if (_neighbor_busy[i].busy_until_ms < earliest_until_ms) {
+      earliest_until_ms = _neighbor_busy[i].busy_until_ms;
+      oldest_candidate = i;
+    }
+  }
+
+  int8_t candidate = free_candidate >= 0 ? free_candidate : oldest_candidate;
+  if (candidate < 0) return;
+  _neighbor_busy[candidate].active = true;
+  memcpy(_neighbor_busy[candidate].handle, handle, CINDER_NATIVE_HANDLE_LEN);
+  _neighbor_busy[candidate].busy_until_ms = busy_until_ms;
+}
+
+bool KissModem::noteObservedNeighborBusy(
+    const uint8_t* data, uint16_t len, uint32_t now_ms, uint32_t observed_airtime_ms) {
+  uint8_t destination_handle[CINDER_NATIVE_HANDLE_LEN];
+  if (!parseNativeDataDestinationHandle(data, len, destination_handle)) return false;
+
+  uint32_t protect_ms = KISS_TX_NEIGHBOR_BUSY_PROTECT_MS;
+  uint32_t airtime_tail_ms = observed_airtime_ms / 2;
+  if (airtime_tail_ms > protect_ms) protect_ms = airtime_tail_ms;
+  uint32_t busy_until_ms = now_ms + protect_ms;
+  rememberNeighborBusy(destination_handle, busy_until_ms);
+
+  uint8_t source_handle[CINDER_NATIVE_HANDLE_LEN];
+  if (parseNativeDataSourceHandle(data, len, source_handle)) {
+    rememberNeighborBusy(source_handle, busy_until_ms);
+  }
+  return true;
 }
 
 uint8_t KissModem::getFeedbackPressureForPriority(uint8_t priority) const {
@@ -876,9 +961,23 @@ uint32_t KissModem::getRemainingHeadReleaseDelayMs(uint32_t now_ms) const {
 
 uint32_t KissModem::getRemainingAckTurnProtectDelayMs(uint32_t now_ms) const {
   if (!headTxIsData()) return 0;
+  if (_tx_queue[0].has_destination_handle) return 0;
   if (_ack_turn_protect_until_ms == 0) return 0;
   if ((int32_t)(_ack_turn_protect_until_ms - now_ms) <= 0) return 0;
   return _ack_turn_protect_until_ms - now_ms;
+}
+
+uint32_t KissModem::getRemainingNeighborBusyDelayMs(uint32_t now_ms) const {
+  if (!headTxIsData() || !_tx_queue[0].has_destination_handle) return 0;
+  uint32_t remaining_ms = 0;
+  for (uint8_t i = 0; i < KISS_TX_NEIGHBOR_BUSY_CAPACITY; i++) {
+    if (!_neighbor_busy[i].active) continue;
+    if (!handlesEqual(_neighbor_busy[i].handle, _tx_queue[0].destination_handle)) continue;
+    if ((int32_t)(_neighbor_busy[i].busy_until_ms - now_ms) <= 0) continue;
+    uint32_t candidate_ms = _neighbor_busy[i].busy_until_ms - now_ms;
+    if (candidate_ms > remaining_ms) remaining_ms = candidate_ms;
+  }
+  return remaining_ms;
 }
 
 uint32_t KissModem::getRemainingObservedRxBiasMs(uint32_t now_ms) const {
@@ -896,12 +995,19 @@ uint8_t KissModem::getTxAdmissionDelayReason(uint32_t now_ms) const {
   uint32_t guard_delay_ms = getRemainingChannelGuardDelayMs(now_ms);
   uint32_t release_delay_ms = getRemainingHeadReleaseDelayMs(now_ms);
   uint32_t ack_turn_delay_ms = getRemainingAckTurnProtectDelayMs(now_ms);
+  uint32_t neighbor_busy_delay_ms = getRemainingNeighborBusyDelayMs(now_ms);
   if (release_delay_ms > 0 &&
       release_delay_ms >= guard_delay_ms &&
-      release_delay_ms >= ack_turn_delay_ms) {
+      release_delay_ms >= ack_turn_delay_ms &&
+      release_delay_ms >= neighbor_busy_delay_ms) {
     return SCHED_DEFER_RANDOM_BACKOFF;
   }
-  if (ack_turn_delay_ms > 0 && ack_turn_delay_ms >= guard_delay_ms) {
+  if (ack_turn_delay_ms > 0 &&
+      ack_turn_delay_ms >= guard_delay_ms &&
+      ack_turn_delay_ms >= neighbor_busy_delay_ms) {
+    return SCHED_DEFER_OBSERVED_RX;
+  }
+  if (neighbor_busy_delay_ms > 0 && neighbor_busy_delay_ms >= guard_delay_ms) {
     return SCHED_DEFER_OBSERVED_RX;
   }
   if (guard_delay_ms > 0) return SCHED_DEFER_CHANNEL_GUARD;
@@ -912,8 +1018,10 @@ uint32_t KissModem::getRemainingTxAdmissionDelayMs(uint32_t now_ms) const {
   uint32_t guard_delay_ms = getRemainingChannelGuardDelayMs(now_ms);
   uint32_t release_delay_ms = getRemainingHeadReleaseDelayMs(now_ms);
   uint32_t ack_turn_delay_ms = getRemainingAckTurnProtectDelayMs(now_ms);
+  uint32_t neighbor_busy_delay_ms = getRemainingNeighborBusyDelayMs(now_ms);
   uint32_t max_delay_ms = guard_delay_ms > release_delay_ms ? guard_delay_ms : release_delay_ms;
-  return max_delay_ms > ack_turn_delay_ms ? max_delay_ms : ack_turn_delay_ms;
+  if (ack_turn_delay_ms > max_delay_ms) max_delay_ms = ack_turn_delay_ms;
+  return max_delay_ms > neighbor_busy_delay_ms ? max_delay_ms : neighbor_busy_delay_ms;
 }
 
 uint32_t KissModem::getSchedulerDelayMs(uint32_t now_ms) const {
@@ -1001,6 +1109,7 @@ void KissModem::resetAdmissionState() {
   _observed_rx_guard_until_ms = 0;
   _observed_rx_guard_priority = KISS_TX_DATA_PRIORITY;
   _ack_turn_protect_until_ms = 0;
+  clearNeighborBusy();
   _last_observed_rx_airtime_ms = 0;
   _observed_rx_retreat_count = 0;
   _last_observed_rx_retreat_ms = 0;
@@ -1155,9 +1264,13 @@ void KissModem::onPacketReceived(int8_t snr, int8_t rssi, const uint8_t* packet,
     _observed_rx_guard_priority = observed_priority;
   }
   if (observed_priority >= KISS_TX_DATA_PRIORITY) {
-    uint32_t ack_turn_until_ms = now_ms + KISS_TX_ACK_TURN_PROTECT_MS;
-    if ((int32_t)(ack_turn_until_ms - _ack_turn_protect_until_ms) > 0) {
-      _ack_turn_protect_until_ms = ack_turn_until_ms;
+    bool has_neighbor_busy =
+        noteObservedNeighborBusy(packet, len, now_ms, _last_observed_rx_airtime_ms);
+    if (!has_neighbor_busy) {
+      uint32_t ack_turn_until_ms = now_ms + KISS_TX_ACK_TURN_PROTECT_MS;
+      if ((int32_t)(ack_turn_until_ms - _ack_turn_protect_until_ms) > 0) {
+        _ack_turn_protect_until_ms = ack_turn_until_ms;
+      }
     }
   }
   applyObservedRxQueueRetreat(now_ms, observed_priority);

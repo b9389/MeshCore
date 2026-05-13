@@ -60,6 +60,9 @@
 #define KISS_TX_ADMISSION_WINDOW_REFERENCE_BYTES 229
 #define KISS_TX_ACK_TURN_PROTECT_MS 600UL
 #define KISS_TX_FEEDBACK_HISTORY_CAPACITY 8
+#define KISS_TX_NEIGHBOR_BUSY_CAPACITY 4
+#define KISS_TX_NEIGHBOR_BUSY_PROTECT_MS 600UL
+#define CINDER_NATIVE_HANDLE_LEN 8
 #define KISS_ADMISSION_CONFIG_VERSION_V1 1
 #define KISS_ADMISSION_CONFIG_VERSION 2
 #define KISS_ADMISSION_CONFIG_V1_PAYLOAD_LEN 21
@@ -129,7 +132,7 @@
 #define HW_ERR_TX_BACKPRESSURE   0x09
 #define HW_ERR_BUSY              0x0A
 
-#define KISS_FIRMWARE_VERSION 27
+#define KISS_FIRMWARE_VERSION 28
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -238,12 +241,20 @@ struct TxQueueEntry {
   uint32_t release_at_ms;
   bool has_message_id;
   uint64_t message_id;
+  bool has_destination_handle;
+  uint8_t destination_handle[CINDER_NATIVE_HANDLE_LEN];
 };
 
 struct TxFeedbackEntry {
   bool active;
   uint64_t message_id;
   uint8_t priority;
+};
+
+struct NeighborBusyEntry {
+  bool active;
+  uint8_t handle[CINDER_NATIVE_HANDLE_LEN];
+  uint32_t busy_until_ms;
 };
 
 enum TxState {
@@ -304,6 +315,7 @@ class KissModem {
   uint32_t _observed_rx_guard_until_ms;
   uint8_t _observed_rx_guard_priority;
   uint32_t _ack_turn_protect_until_ms;
+  NeighborBusyEntry _neighbor_busy[KISS_TX_NEIGHBOR_BUSY_CAPACITY];
   uint32_t _last_observed_rx_airtime_ms;
   uint32_t _observed_rx_retreat_count;
   uint32_t _last_observed_rx_retreat_ms;
@@ -353,9 +365,19 @@ class KissModem {
   uint8_t getTxDoneDeferReason(uint32_t next_tx_delay_ms) const;
   bool headTxIsData() const;
   bool parseNativeDataMessageId(const uint8_t* data, uint16_t len, uint64_t* message_id) const;
+  bool parseNativeDataDestinationHandle(const uint8_t* data, uint16_t len,
+      uint8_t* destination_handle) const;
+  bool parseNativeDataSourceHandle(const uint8_t* data, uint16_t len,
+      uint8_t* source_handle) const;
+  bool isNativeDataFrame(const uint8_t* data, uint16_t len) const;
+  bool handlesEqual(const uint8_t* a, const uint8_t* b) const;
   void clearFeedbackHistory();
   void rememberSentDataFeedback(uint64_t message_id, uint8_t priority);
   uint8_t lookupFeedbackPriority(uint64_t message_id) const;
+  void clearNeighborBusy();
+  void rememberNeighborBusy(const uint8_t* handle, uint32_t busy_until_ms);
+  bool noteObservedNeighborBusy(const uint8_t* data, uint16_t len, uint32_t now_ms,
+      uint32_t observed_airtime_ms);
   uint8_t getFeedbackPressureForPriority(uint8_t priority) const;
   uint8_t getFeedbackPressureMaxForPriority(uint8_t priority) const;
   void increaseFeedbackPressureForPriority(uint8_t priority, uint8_t amount);
@@ -380,6 +402,7 @@ class KissModem {
   uint32_t getRemainingChannelGuardDelayMs(uint32_t now_ms) const;
   uint32_t getRemainingHeadReleaseDelayMs(uint32_t now_ms) const;
   uint32_t getRemainingAckTurnProtectDelayMs(uint32_t now_ms) const;
+  uint32_t getRemainingNeighborBusyDelayMs(uint32_t now_ms) const;
   uint32_t getRemainingObservedRxBiasMs(uint32_t now_ms) const;
   uint32_t getRemainingObservedRxGuardDelayMs(uint32_t now_ms) const;
   uint8_t getTxAdmissionDelayReason(uint32_t now_ms) const;
