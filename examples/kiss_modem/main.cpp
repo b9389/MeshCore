@@ -180,10 +180,16 @@ float onGetCurrentRssi() {
   return radio_driver.getCurrentRSSI();
 }
 
-void onGetStats(uint32_t* rx, uint32_t* tx, uint32_t* errors) {
+void onGetStats(uint32_t* rx, uint32_t* tx, uint32_t* errors,
+                int16_t* last_recv_error_code, uint16_t* last_recv_error_len,
+                int16_t* last_start_recv_error_code, uint32_t* start_recv_error_count) {
   *rx = radio_driver.getPacketsRecv();
   *tx = radio_driver.getPacketsSent();
   *errors = radio_driver.getPacketsRecvErrors();
+  *last_recv_error_code = radio_driver.getLastRecvErrorCode();
+  *last_recv_error_len = radio_driver.getLastRecvErrorLen();
+  *last_start_recv_error_code = radio_driver.getLastStartRecvErrorCode();
+  *start_recv_error_count = radio_driver.getStartRecvErrorCount();
 }
 
 void setup() {

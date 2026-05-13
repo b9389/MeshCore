@@ -27,6 +27,7 @@ void setFlag(void) {
 void RadioLibWrapper::begin() {
   _radio->setPacketReceivedAction(setFlag);  // this is also SentComplete interrupt
   state = STATE_IDLE;
+  resetStats();
 
   if (_board->getStartupReason() == BD_STARTUP_RX_PACKET) {  // received a LoRa packet (while in deep sleep)
     setFlag(); // LoRa packet is already received
@@ -98,6 +99,8 @@ void RadioLibWrapper::startRecv() {
   if (err == RADIOLIB_ERR_NONE) {
     state = STATE_RX;
   } else {
+    _last_start_recv_error_code = err;
+    _start_recv_error_count++;
     MESH_DEBUG_PRINTLN("RadioLibWrapper: error: startReceive(%d)", err);
   }
 }
@@ -115,6 +118,8 @@ int RadioLibWrapper::recvRaw(uint8_t* bytes, int sz) {
       int err = _radio->readData(bytes, len);
       if (err != RADIOLIB_ERR_NONE) {
         MESH_DEBUG_PRINTLN("RadioLibWrapper: error: readData(%d)", err);
+        _last_recv_error_code = err;
+        _last_recv_error_len = len;
         len = 0;
         n_recv_errors++;
       } else {
@@ -126,12 +131,7 @@ int RadioLibWrapper::recvRaw(uint8_t* bytes, int sz) {
   }
 
   if (state != STATE_RX) {
-    int err = _radio->startReceive();
-    if (err == RADIOLIB_ERR_NONE) {
-      state = STATE_RX;
-    } else {
-      MESH_DEBUG_PRINTLN("RadioLibWrapper: error: startReceive(%d)", err);
-    }
+    startRecv();
   }
   return len;
 }

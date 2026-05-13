@@ -132,7 +132,7 @@
 #define HW_ERR_TX_BACKPRESSURE   0x09
 #define HW_ERR_BUSY              0x0A
 
-#define KISS_FIRMWARE_VERSION 29
+#define KISS_FIRMWARE_VERSION 30
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -217,7 +217,11 @@
 typedef void (*SetRadioCallback)(float freq, float bw, uint8_t sf, uint8_t cr);
 typedef void (*SetTxPowerCallback)(uint8_t power);
 typedef float (*GetCurrentRssiCallback)();
-typedef void (*GetStatsCallback)(uint32_t* rx, uint32_t* tx, uint32_t* errors);
+typedef void (*GetStatsCallback)(uint32_t* rx, uint32_t* tx, uint32_t* errors,
+                                 int16_t* last_recv_error_code,
+                                 uint16_t* last_recv_error_len,
+                                 int16_t* last_start_recv_error_code,
+                                 uint32_t* start_recv_error_count);
 
 struct RadioConfig {
   uint32_t freq_hz;

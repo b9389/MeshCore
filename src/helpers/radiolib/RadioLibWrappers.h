@@ -8,6 +8,10 @@ protected:
   PhysicalLayer* _radio;
   mesh::MainBoard* _board;
   uint32_t n_recv, n_sent, n_recv_errors;
+  int16_t _last_recv_error_code;
+  uint16_t _last_recv_error_len;
+  int16_t _last_start_recv_error_code;
+  uint32_t _start_recv_error_count;
   int16_t _noise_floor, _threshold;
   uint16_t _num_floor_samples;
   int32_t _floor_sample_sum;
@@ -19,7 +23,7 @@ protected:
   virtual void doResetAGC();
 
 public:
-  RadioLibWrapper(PhysicalLayer& radio, mesh::MainBoard& board) : _radio(&radio), _board(&board) { n_recv = n_sent = 0; }
+  RadioLibWrapper(PhysicalLayer& radio, mesh::MainBoard& board) : _radio(&radio), _board(&board) { resetStats(); }
 
   void begin() override;
   virtual void powerOff() { _radio->sleep(); }
@@ -48,7 +52,17 @@ public:
   uint32_t getPacketsRecv() const { return n_recv; }
   uint32_t getPacketsRecvErrors() const { return n_recv_errors; }
   uint32_t getPacketsSent() const { return n_sent; }
-  void resetStats() { n_recv = n_sent = n_recv_errors = 0; }
+  int16_t getLastRecvErrorCode() const { return _last_recv_error_code; }
+  uint16_t getLastRecvErrorLen() const { return _last_recv_error_len; }
+  int16_t getLastStartRecvErrorCode() const { return _last_start_recv_error_code; }
+  uint32_t getStartRecvErrorCount() const { return _start_recv_error_count; }
+  void resetStats() {
+    n_recv = n_sent = n_recv_errors = 0;
+    _last_recv_error_code = 0;
+    _last_recv_error_len = 0;
+    _last_start_recv_error_code = 0;
+    _start_recv_error_count = 0;
+  }
 
   virtual float getLastRSSI() const override;
   virtual float getLastSNR() const override;
