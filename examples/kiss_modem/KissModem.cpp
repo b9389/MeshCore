@@ -1552,11 +1552,14 @@ void KissModem::handleGetStats() {
   }
 
   uint32_t rx, tx, errors, start_recv_error_count;
+  uint32_t recv_crc_error_count, recv_header_error_count, recv_other_error_count;
   int16_t last_recv_error_code, last_start_recv_error_code;
   uint16_t last_recv_error_len;
   _getStatsCallback(&rx, &tx, &errors, &last_recv_error_code, &last_recv_error_len,
-                    &last_start_recv_error_code, &start_recv_error_count);
-  uint8_t buf[128];
+                    &last_start_recv_error_code, &start_recv_error_count,
+                    &recv_crc_error_count, &recv_header_error_count,
+                    &recv_other_error_count);
+  uint8_t buf[140];
   uint16_t queue_len = _tx_queue_len;
   uint16_t queue_capacity = KISS_TX_QUEUE_CAPACITY;
   uint32_t next_tx_delay_ms = getSchedulerDelayMs();
@@ -1611,6 +1614,9 @@ void KissModem::handleGetStats() {
   memcpy(buf + 120, &last_recv_error_len, 2);
   memcpy(buf + 122, &last_start_recv_error_code, 2);
   memcpy(buf + 124, &start_recv_error_count, 4);
+  memcpy(buf + 128, &recv_crc_error_count, 4);
+  memcpy(buf + 132, &recv_header_error_count, 4);
+  memcpy(buf + 136, &recv_other_error_count, 4);
   writeHardwareFrame(HW_RESP(HW_CMD_GET_STATS), buf, sizeof(buf));
 }
 

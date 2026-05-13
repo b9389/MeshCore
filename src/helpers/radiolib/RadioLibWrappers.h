@@ -8,6 +8,9 @@ protected:
   PhysicalLayer* _radio;
   mesh::MainBoard* _board;
   uint32_t n_recv, n_sent, n_recv_errors;
+  uint32_t _recv_crc_error_count;
+  uint32_t _recv_header_error_count;
+  uint32_t _recv_other_error_count;
   int16_t _last_recv_error_code;
   uint16_t _last_recv_error_len;
   int16_t _last_start_recv_error_code;
@@ -52,12 +55,18 @@ public:
   uint32_t getPacketsRecv() const { return n_recv; }
   uint32_t getPacketsRecvErrors() const { return n_recv_errors; }
   uint32_t getPacketsSent() const { return n_sent; }
+  uint32_t getRecvCrcErrorCount() const { return _recv_crc_error_count; }
+  uint32_t getRecvHeaderErrorCount() const { return _recv_header_error_count; }
+  uint32_t getRecvOtherErrorCount() const { return _recv_other_error_count; }
   int16_t getLastRecvErrorCode() const { return _last_recv_error_code; }
   uint16_t getLastRecvErrorLen() const { return _last_recv_error_len; }
   int16_t getLastStartRecvErrorCode() const { return _last_start_recv_error_code; }
   uint32_t getStartRecvErrorCount() const { return _start_recv_error_count; }
   void resetStats() {
     n_recv = n_sent = n_recv_errors = 0;
+    _recv_crc_error_count = 0;
+    _recv_header_error_count = 0;
+    _recv_other_error_count = 0;
     _last_recv_error_code = 0;
     _last_recv_error_len = 0;
     _last_start_recv_error_code = 0;

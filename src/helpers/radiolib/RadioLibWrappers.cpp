@@ -122,6 +122,13 @@ int RadioLibWrapper::recvRaw(uint8_t* bytes, int sz) {
         _last_recv_error_len = len;
         len = 0;
         n_recv_errors++;
+        if (err == RADIOLIB_ERR_CRC_MISMATCH) {
+          _recv_crc_error_count++;
+        } else if (err == RADIOLIB_ERR_LORA_HEADER_DAMAGED) {
+          _recv_header_error_count++;
+        } else {
+          _recv_other_error_count++;
+        }
       } else {
       //  Serial.print("  readData() -> "); Serial.println(len);
         n_recv++;
