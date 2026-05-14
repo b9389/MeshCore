@@ -50,6 +50,7 @@ KissModem::KissModem(Stream& serial, mesh::LocalIdentity& identity, mesh::RNG& r
   _last_observed_rx_retreat_ms = 0;
   clearReceiveErrorPressureSample();
   _shared_channel_cooldown_until_ms = 0;
+  _blind_failure_pressure = 0;
   _txdelay = KISS_DEFAULT_TXDELAY;
   _persistence = KISS_DEFAULT_PERSISTENCE;
   _slottime = KISS_DEFAULT_SLOTTIME;
@@ -121,6 +122,7 @@ void KissModem::begin() {
   _last_observed_rx_retreat_ms = 0;
   clearReceiveErrorPressureSample();
   _shared_channel_cooldown_until_ms = 0;
+  _blind_failure_pressure = 0;
   purgeExpiredOverrides();
 }
 
@@ -811,6 +813,23 @@ void KissModem::applySharedChannelCooldown(uint32_t now_ms, uint8_t pressure_ste
   applySharedChannelQueueRetreat(now_ms);
 }
 
+void KissModem::increaseBlindFailurePressure(uint32_t now_ms) {
+  if (_blind_failure_pressure < KISS_TX_BLIND_FAILURE_PRESSURE_MAX) {
+    _blind_failure_pressure++;
+  }
+  if (_blind_failure_pressure < KISS_TX_BLIND_FAILURE_COOLDOWN_THRESHOLD) return;
+
+  uint8_t pressure_steps =
+      _blind_failure_pressure > KISS_TX_BLIND_FAILURE_COOLDOWN_THRESHOLD ? 2 : 1;
+  applySharedChannelCooldown(now_ms, pressure_steps);
+}
+
+void KissModem::decreaseBlindFailurePressure(uint8_t amount) {
+  if (amount == 0) return;
+  if (_blind_failure_pressure > amount) _blind_failure_pressure -= amount;
+  else _blind_failure_pressure = 0;
+}
+
 uint8_t KissModem::getFeedbackPressureForPriority(uint8_t priority) const {
   if (priority >= KISS_TX_BULK_PRIORITY) return _bulk_feedback_pressure;
   if (priority >= KISS_TX_TELEMETRY_PRIORITY) return _telemetry_feedback_pressure;
@@ -1308,6 +1327,7 @@ void KissModem::resetAdmissionState() {
   _last_observed_rx_retreat_ms = 0;
   clearReceiveErrorPressureSample();
   _shared_channel_cooldown_until_ms = 0;
+  _blind_failure_pressure = 0;
 }
 
 void KissModem::processTx() {
@@ -1905,22 +1925,26 @@ void KissModem::handleAdmissionFeedback(const uint8_t* data, uint16_t len) {
       _admission_feedback_success_count++;
       decreaseFeedbackPressureForPriority(feedback_priority, 1);
       decreaseDataCongestionScoreForPriority(feedback_priority);
+      decreaseBlindFailurePressure(1);
       writeHardwareFrame(HW_RESP_OK, nullptr, 0);
       break;
     case ADMISSION_FEEDBACK_ACKED:
       _admission_feedback_success_count++;
       decreaseFeedbackPressureForPriority(feedback_priority, 2);
       decreaseDataCongestionScoreForPriority(feedback_priority);
+      decreaseBlindFailurePressure(2);
       writeHardwareFrame(HW_RESP_OK, nullptr, 0);
       break;
     case ADMISSION_FEEDBACK_LOST:
       _admission_feedback_failure_count++;
       increaseFeedbackPressureForPriority(feedback_priority, 1);
+      increaseBlindFailurePressure(millis());
       writeHardwareFrame(HW_RESP_OK, nullptr, 0);
       break;
     case ADMISSION_FEEDBACK_ACK_TIMEOUT:
       _admission_feedback_failure_count++;
       increaseFeedbackPressureForPriority(feedback_priority, 1);
+      increaseBlindFailurePressure(millis());
       writeHardwareFrame(HW_RESP_OK, nullptr, 0);
       break;
     default:

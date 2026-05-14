@@ -66,6 +66,8 @@
 #define KISS_TX_SHARED_CHANNEL_COOLDOWN_MIN_MS 1000UL
 #define KISS_TX_SHARED_CHANNEL_COOLDOWN_CAP_MS 6000UL
 #define KISS_TX_SHARED_CHANNEL_COOLDOWN_MULTIPLIER 3
+#define KISS_TX_BLIND_FAILURE_COOLDOWN_THRESHOLD 2
+#define KISS_TX_BLIND_FAILURE_PRESSURE_MAX 4
 #define CINDER_NATIVE_HANDLE_LEN 8
 #define KISS_ADMISSION_CONFIG_VERSION_V1 1
 #define KISS_ADMISSION_CONFIG_VERSION 2
@@ -136,7 +138,7 @@
 #define HW_ERR_TX_BACKPRESSURE   0x09
 #define HW_ERR_BUSY              0x0A
 
-#define KISS_FIRMWARE_VERSION 35
+#define KISS_FIRMWARE_VERSION 36
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -342,6 +344,7 @@ class KissModem {
   uint32_t _last_sampled_recv_other_error_count;
   bool _has_recv_error_pressure_sample;
   uint32_t _shared_channel_cooldown_until_ms;
+  uint8_t _blind_failure_pressure;
 
   uint8_t _txdelay;
   uint8_t _persistence;
@@ -408,6 +411,8 @@ class KissModem {
   void sampleReceiveErrorPressure(uint32_t now_ms);
   void increaseChannelCongestionScore(uint8_t amount);
   void applySharedChannelCooldown(uint32_t now_ms, uint8_t pressure_steps);
+  void increaseBlindFailurePressure(uint32_t now_ms);
+  void decreaseBlindFailurePressure(uint8_t amount);
   uint8_t getFeedbackPressureForPriority(uint8_t priority) const;
   uint8_t getFeedbackPressureMaxForPriority(uint8_t priority) const;
   void increaseFeedbackPressureForPriority(uint8_t priority, uint8_t amount);
