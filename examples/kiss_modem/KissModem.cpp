@@ -476,6 +476,11 @@ bool KissModem::enqueueTx(const uint8_t* data, uint16_t len) {
   bool is_retry = has_message_id && hasSentDataFeedback(message_id);
   bool has_local_reservation =
       has_message_id && consumeLocalChannelReservation(message_id, release_at_ms);
+  uint64_t queued_reservation_id = 0;
+  uint16_t queued_reservation_lease_ms = 0;
+  bool queued_channel_reservation =
+      parseNativeChannelReservation(
+          data, len, &queued_reservation_id, &queued_reservation_lease_ms);
 
   memcpy(_tx_queue[insert_index].data, data, len);
   _tx_queue[insert_index].len = len;
@@ -492,6 +497,10 @@ bool KissModem::enqueueTx(const uint8_t* data, uint16_t len) {
         randomDataAdmissionBackoffMs(priority, estimated_airtime_ms, is_retry);
     release_at_ms += backoff_ms;
     recordAdmissionEvent(SCHED_DEFER_RANDOM_BACKOFF, backoff_ms);
+  }
+  if (queued_channel_reservation) {
+    rememberLocalChannelReservation(
+        queued_reservation_id, release_at_ms, queued_reservation_lease_ms);
   }
   _tx_queue[insert_index].release_at_ms = release_at_ms;
   _tx_queue_len++;
