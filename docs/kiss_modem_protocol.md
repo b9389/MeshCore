@@ -329,6 +329,8 @@ All values little-endian.
 | SharedChannelLeaseDeferCount | 4 bytes | Optional cumulative scheduler defer episodes caused by active channel-reservation lease |
 | LocalChannelReservationUseCount | 4 bytes | Optional cumulative locally transmitted reservations that were consumed by matching data frames |
 
+Firmware `2700` keeps the FW2600 stats and wire format but caps the effective channel-reservation lease at `2500 ms` inside the modem. Hosts may still request shorter leases; longer requested leases are accepted for compatibility but do not hold the data scheduler beyond the effective cap.
+
 The current Cinder bench KISS modem uses a four-frame priority TX queue. Hosts should continue to accept the legacy 12-byte payload without queue fields.
 
 ### ReportAdmissionFeedback (command `0x47`)

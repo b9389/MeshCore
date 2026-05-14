@@ -874,6 +874,9 @@ void KissModem::applySharedChannelLease(uint32_t now_ms, uint32_t lease_ms) {
   if (lease_ms > KISS_TX_SHARED_CHANNEL_LEASE_CAP_MS) {
     lease_ms = KISS_TX_SHARED_CHANNEL_LEASE_CAP_MS;
   }
+  if (lease_ms > KISS_TX_SHARED_CHANNEL_LEASE_EFFECTIVE_CAP_MS) {
+    lease_ms = KISS_TX_SHARED_CHANNEL_LEASE_EFFECTIVE_CAP_MS;
+  }
   uint32_t lease_until_ms = now_ms + lease_ms;
   if ((int32_t)(lease_until_ms - _shared_channel_lease_until_ms) > 0) {
     _shared_channel_lease_until_ms = lease_until_ms;
@@ -903,6 +906,9 @@ void KissModem::rememberLocalChannelReservation(
   if (lease_ms == 0) return;
   if (lease_ms > KISS_TX_SHARED_CHANNEL_LEASE_CAP_MS) {
     lease_ms = KISS_TX_SHARED_CHANNEL_LEASE_CAP_MS;
+  }
+  if (lease_ms > KISS_TX_SHARED_CHANNEL_LEASE_EFFECTIVE_CAP_MS) {
+    lease_ms = KISS_TX_SHARED_CHANNEL_LEASE_EFFECTIVE_CAP_MS;
   }
   _local_channel_reservation_message_id = message_id;
   _local_channel_reservation_until_ms = now_ms + lease_ms;
