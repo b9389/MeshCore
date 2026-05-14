@@ -63,6 +63,9 @@
 #define KISS_TX_NEIGHBOR_BUSY_CAPACITY 4
 #define KISS_TX_NEIGHBOR_BUSY_PROTECT_MS 600UL
 #define KISS_TX_RECV_ERROR_PRESSURE_SAMPLE_MS 250UL
+#define KISS_TX_SHARED_CHANNEL_COOLDOWN_MIN_MS 1000UL
+#define KISS_TX_SHARED_CHANNEL_COOLDOWN_CAP_MS 6000UL
+#define KISS_TX_SHARED_CHANNEL_COOLDOWN_MULTIPLIER 3
 #define CINDER_NATIVE_HANDLE_LEN 8
 #define KISS_ADMISSION_CONFIG_VERSION_V1 1
 #define KISS_ADMISSION_CONFIG_VERSION 2
@@ -133,7 +136,7 @@
 #define HW_ERR_TX_BACKPRESSURE   0x09
 #define HW_ERR_BUSY              0x0A
 
-#define KISS_FIRMWARE_VERSION 34
+#define KISS_FIRMWARE_VERSION 35
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -338,6 +341,7 @@ class KissModem {
   uint32_t _last_sampled_recv_header_error_count;
   uint32_t _last_sampled_recv_other_error_count;
   bool _has_recv_error_pressure_sample;
+  uint32_t _shared_channel_cooldown_until_ms;
 
   uint8_t _txdelay;
   uint8_t _persistence;
@@ -403,6 +407,7 @@ class KissModem {
   void clearReceiveErrorPressureSample();
   void sampleReceiveErrorPressure(uint32_t now_ms);
   void increaseChannelCongestionScore(uint8_t amount);
+  void applySharedChannelCooldown(uint32_t now_ms, uint8_t pressure_steps);
   uint8_t getFeedbackPressureForPriority(uint8_t priority) const;
   uint8_t getFeedbackPressureMaxForPriority(uint8_t priority) const;
   void increaseFeedbackPressureForPriority(uint8_t priority, uint8_t amount);
@@ -415,8 +420,10 @@ class KissModem {
   uint32_t randomDataBusyBackoffMs(uint8_t priority, uint32_t estimated_airtime_ms,
       bool retry_context);
   uint32_t randomObservedRxRetreatMs(uint32_t now_ms);
+  uint32_t randomSharedChannelRetreatMs(uint32_t now_ms);
   void recordObservedRxRetreat(uint32_t retreat_ms);
   void applyObservedRxQueueRetreat(uint32_t now_ms, uint8_t observed_priority);
+  void applySharedChannelQueueRetreat(uint32_t now_ms);
   uint32_t scaledAirtimeMs(uint32_t estimated_airtime_ms, uint8_t multiplier) const;
   uint32_t getClassAdmissionBaseMaxMs(uint8_t priority, uint32_t estimated_airtime_ms) const;
   uint32_t getAdaptiveDataAdmissionBackoffMinMs(uint8_t priority, uint32_t estimated_airtime_ms,
@@ -436,6 +443,7 @@ class KissModem {
   uint32_t getRemainingNeighborBusyDelayMs(uint32_t now_ms) const;
   uint32_t getRemainingObservedRxBiasMs(uint32_t now_ms) const;
   uint32_t getRemainingObservedRxGuardDelayMs(uint32_t now_ms) const;
+  uint32_t getRemainingSharedChannelCooldownMs(uint32_t now_ms) const;
   uint8_t getTxAdmissionDelayReason(uint32_t now_ms) const;
   uint32_t getRemainingTxAdmissionDelayMs(uint32_t now_ms) const;
   uint32_t getSchedulerDelayMs(uint32_t now_ms) const;

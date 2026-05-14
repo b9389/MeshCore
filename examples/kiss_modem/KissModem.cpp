@@ -49,6 +49,7 @@ KissModem::KissModem(Stream& serial, mesh::LocalIdentity& identity, mesh::RNG& r
   _observed_rx_retreat_count = 0;
   _last_observed_rx_retreat_ms = 0;
   clearReceiveErrorPressureSample();
+  _shared_channel_cooldown_until_ms = 0;
   _txdelay = KISS_DEFAULT_TXDELAY;
   _persistence = KISS_DEFAULT_PERSISTENCE;
   _slottime = KISS_DEFAULT_SLOTTIME;
@@ -119,6 +120,7 @@ void KissModem::begin() {
   _observed_rx_retreat_count = 0;
   _last_observed_rx_retreat_ms = 0;
   clearReceiveErrorPressureSample();
+  _shared_channel_cooldown_until_ms = 0;
   purgeExpiredOverrides();
 }
 
@@ -775,7 +777,9 @@ void KissModem::sampleReceiveErrorPressure(uint32_t now_ms) {
 
   uint32_t strong_error_delta = crc_delta + header_delta;
   if (strong_error_delta > 0) {
-    increaseChannelCongestionScore(strong_error_delta > 1 ? 2 : 1);
+    uint8_t pressure_steps = strong_error_delta > 1 ? 2 : 1;
+    increaseChannelCongestionScore(pressure_steps);
+    applySharedChannelCooldown(now_ms, pressure_steps);
   }
   if (other_delta > 0) {
     increaseChannelCongestionScore(1);
@@ -786,6 +790,25 @@ void KissModem::increaseChannelCongestionScore(uint8_t amount) {
   increaseDataCongestionScoreForPriority(KISS_TX_DATA_PRIORITY, amount);
   increaseDataCongestionScoreForPriority(KISS_TX_TELEMETRY_PRIORITY, amount);
   increaseDataCongestionScoreForPriority(KISS_TX_BULK_PRIORITY, amount);
+}
+
+void KissModem::applySharedChannelCooldown(uint32_t now_ms, uint8_t pressure_steps) {
+  if (pressure_steps == 0) return;
+  uint32_t reference_airtime_ms =
+      _radio.getEstAirtimeFor(KISS_TX_ADMISSION_WINDOW_REFERENCE_BYTES);
+  uint8_t multiplier = KISS_TX_SHARED_CHANNEL_COOLDOWN_MULTIPLIER + pressure_steps - 1;
+  uint32_t cooldown_ms = scaledAirtimeMs(reference_airtime_ms, multiplier);
+  if (cooldown_ms < KISS_TX_SHARED_CHANNEL_COOLDOWN_MIN_MS) {
+    cooldown_ms = KISS_TX_SHARED_CHANNEL_COOLDOWN_MIN_MS;
+  }
+  if (cooldown_ms > KISS_TX_SHARED_CHANNEL_COOLDOWN_CAP_MS) {
+    cooldown_ms = KISS_TX_SHARED_CHANNEL_COOLDOWN_CAP_MS;
+  }
+  uint32_t cooldown_until_ms = now_ms + cooldown_ms;
+  if ((int32_t)(cooldown_until_ms - _shared_channel_cooldown_until_ms) > 0) {
+    _shared_channel_cooldown_until_ms = cooldown_until_ms;
+  }
+  applySharedChannelQueueRetreat(now_ms);
 }
 
 uint8_t KissModem::getFeedbackPressureForPriority(uint8_t priority) const {
@@ -851,14 +874,22 @@ uint32_t KissModem::randomDataAdmissionBackoffMs(
   uint32_t max_ms =
       getAdaptiveDataAdmissionBackoffMaxMs(priority, estimated_airtime_ms, retry_context);
   uint32_t backoff_ms = randomDelayMs(min_ms, max_ms);
-  uint32_t retreat_ms = randomObservedRxRetreatMs(millis());
-  if (retreat_ms == 0 || backoff_ms >= KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS) {
-    return backoff_ms;
+  uint32_t now_ms = millis();
+  uint32_t observed_retreat_ms = randomObservedRxRetreatMs(now_ms);
+  if (observed_retreat_ms > 0 && backoff_ms < KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS) {
+    uint32_t remaining_ms = KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS - backoff_ms;
+    uint32_t applied_retreat_ms =
+        observed_retreat_ms > remaining_ms ? remaining_ms : observed_retreat_ms;
+    recordObservedRxRetreat(applied_retreat_ms);
+    backoff_ms += applied_retreat_ms;
   }
-  uint32_t remaining_ms = KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS - backoff_ms;
-  uint32_t applied_retreat_ms = retreat_ms > remaining_ms ? remaining_ms : retreat_ms;
-  recordObservedRxRetreat(applied_retreat_ms);
-  return backoff_ms + applied_retreat_ms;
+
+  uint32_t shared_retreat_ms = randomSharedChannelRetreatMs(now_ms);
+  if (shared_retreat_ms > 0 && backoff_ms < KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS) {
+    uint32_t remaining_ms = KISS_TX_DATA_ADMISSION_BACKOFF_CAP_MS - backoff_ms;
+    backoff_ms += shared_retreat_ms > remaining_ms ? remaining_ms : shared_retreat_ms;
+  }
+  return backoff_ms;
 }
 
 uint32_t KissModem::randomDataBusyBackoffMs(
@@ -874,6 +905,12 @@ uint32_t KissModem::randomObservedRxRetreatMs(uint32_t now_ms) {
   uint32_t observed_rx_window_ms = getRemainingObservedRxBiasMs(now_ms);
   if (observed_rx_window_ms == 0) return 0;
   return randomDelayMs(0, observed_rx_window_ms);
+}
+
+uint32_t KissModem::randomSharedChannelRetreatMs(uint32_t now_ms) {
+  uint32_t cooldown_ms = getRemainingSharedChannelCooldownMs(now_ms);
+  if (cooldown_ms == 0) return 0;
+  return randomDelayMs(0, cooldown_ms);
 }
 
 void KissModem::recordObservedRxRetreat(uint32_t retreat_ms) {
@@ -892,6 +929,17 @@ void KissModem::applyObservedRxQueueRetreat(uint32_t now_ms, uint8_t observed_pr
   _tx_queue[0].release_at_ms = release_at_ms;
   recordObservedRxRetreat(retreat_ms);
   recordAdmissionEvent(SCHED_DEFER_OBSERVED_RX, retreat_ms);
+}
+
+void KissModem::applySharedChannelQueueRetreat(uint32_t now_ms) {
+  if (!headTxIsData()) return;
+  uint32_t retreat_ms = randomSharedChannelRetreatMs(now_ms);
+  if (retreat_ms == 0) return;
+
+  uint32_t release_at_ms = now_ms + retreat_ms;
+  if ((int32_t)(release_at_ms - _tx_queue[0].release_at_ms) <= 0) return;
+  _tx_queue[0].release_at_ms = release_at_ms;
+  recordAdmissionEvent(SCHED_DEFER_RANDOM_BACKOFF, retreat_ms);
 }
 
 uint32_t KissModem::scaledAirtimeMs(uint32_t estimated_airtime_ms, uint8_t multiplier) const {
@@ -1119,6 +1167,12 @@ uint32_t KissModem::getRemainingObservedRxGuardDelayMs(uint32_t now_ms) const {
   return getRemainingObservedRxBiasMs(now_ms);
 }
 
+uint32_t KissModem::getRemainingSharedChannelCooldownMs(uint32_t now_ms) const {
+  if (_shared_channel_cooldown_until_ms == 0) return 0;
+  if ((int32_t)(_shared_channel_cooldown_until_ms - now_ms) <= 0) return 0;
+  return _shared_channel_cooldown_until_ms - now_ms;
+}
+
 uint8_t KissModem::getTxAdmissionDelayReason(uint32_t now_ms) const {
   uint32_t guard_delay_ms = getRemainingChannelGuardDelayMs(now_ms);
   uint32_t release_delay_ms = getRemainingHeadReleaseDelayMs(now_ms);
@@ -1253,6 +1307,7 @@ void KissModem::resetAdmissionState() {
   _observed_rx_retreat_count = 0;
   _last_observed_rx_retreat_ms = 0;
   clearReceiveErrorPressureSample();
+  _shared_channel_cooldown_until_ms = 0;
 }
 
 void KissModem::processTx() {
