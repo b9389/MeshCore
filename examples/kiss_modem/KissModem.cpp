@@ -1709,12 +1709,14 @@ void KissModem::handleGetStats() {
                     &last_start_recv_error_code, &start_recv_error_count,
                     &recv_crc_error_count, &recv_header_error_count,
                     &recv_other_error_count);
-  uint8_t buf[140];
+  uint8_t buf[145];
+  uint32_t now_ms = millis();
   uint16_t queue_len = _tx_queue_len;
   uint16_t queue_capacity = KISS_TX_QUEUE_CAPACITY;
-  uint32_t next_tx_delay_ms = getSchedulerDelayMs();
+  uint32_t next_tx_delay_ms = getSchedulerDelayMs(now_ms);
   uint32_t airtime_budget_ms = KISS_TX_QUEUE_AIRTIME_BUDGET_MS;
-  uint32_t observed_rx_guard_delay_ms = getRemainingObservedRxBiasMs(millis());
+  uint32_t observed_rx_guard_delay_ms = getRemainingObservedRxBiasMs(now_ms);
+  uint32_t shared_channel_cooldown_delay_ms = getRemainingSharedChannelCooldownMs(now_ms);
   uint32_t admission_reference_airtime_ms = _radio.getEstAirtimeFor(KISS_TX_ADMISSION_WINDOW_REFERENCE_BYTES);
   uint32_t admission_window_min_ms =
       getAdaptiveDataAdmissionBackoffMinMs(
@@ -1767,6 +1769,8 @@ void KissModem::handleGetStats() {
   memcpy(buf + 128, &recv_crc_error_count, 4);
   memcpy(buf + 132, &recv_header_error_count, 4);
   memcpy(buf + 136, &recv_other_error_count, 4);
+  memcpy(buf + 140, &shared_channel_cooldown_delay_ms, 4);
+  buf[144] = _blind_failure_pressure;
   writeHardwareFrame(HW_RESP(HW_CMD_GET_STATS), buf, sizeof(buf));
 }
 
