@@ -51,6 +51,12 @@ KissModem::KissModem(Stream& serial, mesh::LocalIdentity& identity, mesh::RNG& r
   clearReceiveErrorPressureSample();
   _shared_channel_cooldown_until_ms = 0;
   _blind_failure_pressure = 0;
+  _shared_channel_lease_until_ms = 0;
+  _shared_channel_lease_observed_count = 0;
+  _shared_channel_lease_defer_count = 0;
+  _local_channel_reservation_use_count = 0;
+  _local_channel_reservation_message_id = 0;
+  _local_channel_reservation_until_ms = 0;
   _txdelay = KISS_DEFAULT_TXDELAY;
   _persistence = KISS_DEFAULT_PERSISTENCE;
   _slottime = KISS_DEFAULT_SLOTTIME;
@@ -123,6 +129,12 @@ void KissModem::begin() {
   clearReceiveErrorPressureSample();
   _shared_channel_cooldown_until_ms = 0;
   _blind_failure_pressure = 0;
+  _shared_channel_lease_until_ms = 0;
+  _shared_channel_lease_observed_count = 0;
+  _shared_channel_lease_defer_count = 0;
+  _local_channel_reservation_use_count = 0;
+  _local_channel_reservation_message_id = 0;
+  _local_channel_reservation_until_ms = 0;
   purgeExpiredOverrides();
 }
 
@@ -394,6 +406,7 @@ uint8_t KissModem::getTxPriority(const uint8_t* data, uint16_t len) const {
       case CINDER_NATIVE_PACKET_ROUTE_REQUEST:
       case CINDER_NATIVE_PACKET_ROUTE_REPLY:
       case CINDER_NATIVE_PACKET_CAPABILITY_STATUS:
+      case CINDER_NATIVE_PACKET_CHANNEL_RESERVATION:
         return KISS_TX_CONTROL_PRIORITY_MAX;
       case CINDER_NATIVE_PACKET_DATA_DIRECT:
       case CINDER_NATIVE_PACKET_DATA_GROUP:
@@ -461,6 +474,8 @@ bool KissModem::enqueueTx(const uint8_t* data, uint16_t len) {
   uint64_t message_id = 0;
   bool has_message_id = parseNativeDataMessageId(data, len, &message_id);
   bool is_retry = has_message_id && hasSentDataFeedback(message_id);
+  bool has_local_reservation =
+      has_message_id && consumeLocalChannelReservation(message_id, release_at_ms);
 
   memcpy(_tx_queue[insert_index].data, data, len);
   _tx_queue[insert_index].len = len;
@@ -472,7 +487,7 @@ bool KissModem::enqueueTx(const uint8_t* data, uint16_t len) {
   _tx_queue[insert_index].has_destination_handle =
       parseNativeDataDestinationHandle(
           data, len, _tx_queue[insert_index].destination_handle);
-  if (priority >= KISS_TX_DATA_PRIORITY) {
+  if (priority >= KISS_TX_DATA_PRIORITY && !has_local_reservation) {
     uint32_t backoff_ms =
         randomDataAdmissionBackoffMs(priority, estimated_airtime_ms, is_retry);
     release_at_ms += backoff_ms;
@@ -603,6 +618,38 @@ bool KissModem::parseNativeDataMessageId(
     value = (value << 8) | data[3 + i];
   }
   *message_id = value;
+  return true;
+}
+
+bool KissModem::parseNativeChannelReservation(
+    const uint8_t* data, uint16_t len, uint64_t* reservation_id, uint16_t* lease_ms) const {
+  if (data == nullptr || reservation_id == nullptr || lease_ms == nullptr) return false;
+  if (len < 22 || data[0] != CINDER_NATIVE_PROTOCOL_VERSION ||
+      data[1] != CINDER_NATIVE_PACKET_CHANNEL_RESERVATION) {
+    return false;
+  }
+
+  uint64_t parsed_id = 0;
+  for (uint8_t i = 0; i < 8; i++) {
+    parsed_id = (parsed_id << 8) | data[2 + i];
+  }
+
+  uint16_t offset = 18; // version + kind + reservation ID + source handle
+  uint8_t destination_flag = data[offset++];
+  if (destination_flag > 1) return false;
+  if (destination_flag == 1) {
+    if (len < offset + CINDER_NATIVE_HANDLE_LEN + 3) return false;
+    offset += CINDER_NATIVE_HANDLE_LEN;
+  } else if (len < offset + 3) {
+    return false;
+  }
+
+  offset++; // traffic class
+  uint16_t parsed_lease_ms = ((uint16_t)data[offset] << 8) | data[offset + 1];
+  if (parsed_lease_ms == 0) return false;
+
+  *reservation_id = parsed_id;
+  *lease_ms = parsed_lease_ms;
   return true;
 }
 
@@ -813,6 +860,18 @@ void KissModem::applySharedChannelCooldown(uint32_t now_ms, uint8_t pressure_ste
   applySharedChannelQueueRetreat(now_ms);
 }
 
+void KissModem::applySharedChannelLease(uint32_t now_ms, uint32_t lease_ms) {
+  if (lease_ms == 0) return;
+  if (lease_ms > KISS_TX_SHARED_CHANNEL_LEASE_CAP_MS) {
+    lease_ms = KISS_TX_SHARED_CHANNEL_LEASE_CAP_MS;
+  }
+  uint32_t lease_until_ms = now_ms + lease_ms;
+  if ((int32_t)(lease_until_ms - _shared_channel_lease_until_ms) > 0) {
+    _shared_channel_lease_until_ms = lease_until_ms;
+  }
+  _shared_channel_lease_observed_count++;
+}
+
 void KissModem::increaseBlindFailurePressure(uint32_t now_ms) {
   if (_blind_failure_pressure < KISS_TX_BLIND_FAILURE_PRESSURE_MAX) {
     _blind_failure_pressure++;
@@ -828,6 +887,26 @@ void KissModem::decreaseBlindFailurePressure(uint8_t amount) {
   if (amount == 0) return;
   if (_blind_failure_pressure > amount) _blind_failure_pressure -= amount;
   else _blind_failure_pressure = 0;
+}
+
+void KissModem::rememberLocalChannelReservation(
+    uint64_t message_id, uint32_t now_ms, uint32_t lease_ms) {
+  if (lease_ms == 0) return;
+  if (lease_ms > KISS_TX_SHARED_CHANNEL_LEASE_CAP_MS) {
+    lease_ms = KISS_TX_SHARED_CHANNEL_LEASE_CAP_MS;
+  }
+  _local_channel_reservation_message_id = message_id;
+  _local_channel_reservation_until_ms = now_ms + lease_ms;
+}
+
+bool KissModem::consumeLocalChannelReservation(uint64_t message_id, uint32_t now_ms) {
+  if (_local_channel_reservation_until_ms == 0) return false;
+  if (_local_channel_reservation_message_id != message_id) return false;
+  if ((int32_t)(_local_channel_reservation_until_ms - now_ms) <= 0) return false;
+
+  _local_channel_reservation_until_ms = 0;
+  _local_channel_reservation_use_count++;
+  return true;
 }
 
 uint8_t KissModem::getFeedbackPressureForPriority(uint8_t priority) const {
@@ -1192,25 +1271,38 @@ uint32_t KissModem::getRemainingSharedChannelCooldownMs(uint32_t now_ms) const {
   return _shared_channel_cooldown_until_ms - now_ms;
 }
 
+uint32_t KissModem::getRemainingSharedChannelLeaseMs(uint32_t now_ms) const {
+  if (_shared_channel_lease_until_ms == 0) return 0;
+  if ((int32_t)(_shared_channel_lease_until_ms - now_ms) <= 0) return 0;
+  return _shared_channel_lease_until_ms - now_ms;
+}
+
 uint8_t KissModem::getTxAdmissionDelayReason(uint32_t now_ms) const {
   uint32_t guard_delay_ms = getRemainingChannelGuardDelayMs(now_ms);
   uint32_t release_delay_ms = getRemainingHeadReleaseDelayMs(now_ms);
   uint32_t ack_turn_delay_ms = getRemainingAckTurnProtectDelayMs(now_ms);
   uint32_t neighbor_busy_delay_ms = getRemainingNeighborBusyDelayMs(now_ms);
+  uint32_t channel_reservation_delay_ms =
+      headTxIsData() ? getRemainingSharedChannelLeaseMs(now_ms) : 0;
   if (release_delay_ms > 0 &&
       release_delay_ms >= guard_delay_ms &&
       release_delay_ms >= ack_turn_delay_ms &&
-      release_delay_ms >= neighbor_busy_delay_ms) {
+      release_delay_ms >= neighbor_busy_delay_ms &&
+      release_delay_ms >= channel_reservation_delay_ms) {
     return SCHED_DEFER_RANDOM_BACKOFF;
   }
   if (ack_turn_delay_ms > 0 &&
       ack_turn_delay_ms >= guard_delay_ms &&
-      ack_turn_delay_ms >= neighbor_busy_delay_ms) {
+      ack_turn_delay_ms >= neighbor_busy_delay_ms &&
+      ack_turn_delay_ms >= channel_reservation_delay_ms) {
     return SCHED_DEFER_OBSERVED_RX;
   }
-  if (neighbor_busy_delay_ms > 0 && neighbor_busy_delay_ms >= guard_delay_ms) {
+  if (neighbor_busy_delay_ms > 0 &&
+      neighbor_busy_delay_ms >= guard_delay_ms &&
+      neighbor_busy_delay_ms >= channel_reservation_delay_ms) {
     return SCHED_DEFER_NEIGHBOR_BUSY;
   }
+  if (channel_reservation_delay_ms > 0) return SCHED_DEFER_CHANNEL_RESERVATION;
   if (guard_delay_ms > 0) return SCHED_DEFER_CHANNEL_GUARD;
   return SCHED_DEFER_NONE;
 }
@@ -1220,9 +1312,12 @@ uint32_t KissModem::getRemainingTxAdmissionDelayMs(uint32_t now_ms) const {
   uint32_t release_delay_ms = getRemainingHeadReleaseDelayMs(now_ms);
   uint32_t ack_turn_delay_ms = getRemainingAckTurnProtectDelayMs(now_ms);
   uint32_t neighbor_busy_delay_ms = getRemainingNeighborBusyDelayMs(now_ms);
+  uint32_t channel_reservation_delay_ms =
+      headTxIsData() ? getRemainingSharedChannelLeaseMs(now_ms) : 0;
   uint32_t max_delay_ms = guard_delay_ms > release_delay_ms ? guard_delay_ms : release_delay_ms;
   if (ack_turn_delay_ms > max_delay_ms) max_delay_ms = ack_turn_delay_ms;
-  return max_delay_ms > neighbor_busy_delay_ms ? max_delay_ms : neighbor_busy_delay_ms;
+  if (neighbor_busy_delay_ms > max_delay_ms) max_delay_ms = neighbor_busy_delay_ms;
+  return max_delay_ms > channel_reservation_delay_ms ? max_delay_ms : channel_reservation_delay_ms;
 }
 
 uint32_t KissModem::getSchedulerDelayMs(uint32_t now_ms) const {
@@ -1257,6 +1352,10 @@ void KissModem::setLastDefer(uint8_t reason, uint32_t delay_ms) {
   if (reason == SCHED_DEFER_NEIGHBOR_BUSY &&
       _last_defer_reason != SCHED_DEFER_NEIGHBOR_BUSY) {
     _neighbor_busy_defer_count++;
+  }
+  if (reason == SCHED_DEFER_CHANNEL_RESERVATION &&
+      _last_defer_reason != SCHED_DEFER_CHANNEL_RESERVATION) {
+    _shared_channel_lease_defer_count++;
   }
   if (reason == SCHED_DEFER_NEIGHBOR_BUSY) {
     _last_neighbor_busy_delay_ms = delay_ms;
@@ -1328,6 +1427,12 @@ void KissModem::resetAdmissionState() {
   clearReceiveErrorPressureSample();
   _shared_channel_cooldown_until_ms = 0;
   _blind_failure_pressure = 0;
+  _shared_channel_lease_until_ms = 0;
+  _shared_channel_lease_observed_count = 0;
+  _shared_channel_lease_defer_count = 0;
+  _local_channel_reservation_use_count = 0;
+  _local_channel_reservation_message_id = 0;
+  _local_channel_reservation_until_ms = 0;
 }
 
 void KissModem::processTx() {
@@ -1440,11 +1545,20 @@ void KissModem::processTx() {
         bool sent_has_message_id = _tx_queue_len > 0 && _tx_queue[0].has_message_id;
         uint64_t sent_message_id = sent_has_message_id ? _tx_queue[0].message_id : 0;
         uint8_t sent_priority = _tx_queue_len > 0 ? _tx_queue[0].priority : KISS_TX_DATA_PRIORITY;
+        uint64_t reservation_message_id = 0;
+        uint16_t reservation_lease_ms = 0;
+        bool sent_channel_reservation = _tx_queue_len > 0 &&
+            parseNativeChannelReservation(_tx_queue[0].data, _tx_queue[0].len,
+                &reservation_message_id, &reservation_lease_ms);
         _radio.onSendFinished();
         uint32_t finished_ms = millis();
         _last_tx_duration_ms = finished_ms - _tx_started_ms;
         _next_tx_allowed_ms = finished_ms + KISS_TX_CHANNEL_GUARD_MS;
         popQueuedTx();
+        if (sent_channel_reservation) {
+          rememberLocalChannelReservation(
+              reservation_message_id, finished_ms, reservation_lease_ms);
+        }
         if (headTxIsAckFrame() && getRawRemainingChannelGuardDelayMs(finished_ms) > 0) {
           _ack_guard_bypass_count++;
         }
@@ -1475,6 +1589,12 @@ void KissModem::onPacketReceived(int8_t snr, int8_t rssi, const uint8_t* packet,
   uint32_t now_ms = millis();
   _last_observed_rx_airtime_ms = _radio.getEstAirtimeFor(len);
   _observed_rx_count++;
+  uint64_t reservation_id = 0;
+  uint16_t reservation_lease_ms = 0;
+  if (parseNativeChannelReservation(packet, len, &reservation_id, &reservation_lease_ms)) {
+    (void)reservation_id;
+    applySharedChannelLease(now_ms, reservation_lease_ms);
+  }
   uint8_t observed_priority = getTxPriority(packet, len);
   uint32_t guard_until_ms = now_ms + getObservedRxGuardMs(_last_observed_rx_airtime_ms);
   if ((int32_t)(guard_until_ms - _observed_rx_guard_until_ms) > 0) {
@@ -1709,7 +1829,7 @@ void KissModem::handleGetStats() {
                     &last_start_recv_error_code, &start_recv_error_count,
                     &recv_crc_error_count, &recv_header_error_count,
                     &recv_other_error_count);
-  uint8_t buf[145];
+  uint8_t buf[161];
   uint32_t now_ms = millis();
   uint16_t queue_len = _tx_queue_len;
   uint16_t queue_capacity = KISS_TX_QUEUE_CAPACITY;
@@ -1717,6 +1837,7 @@ void KissModem::handleGetStats() {
   uint32_t airtime_budget_ms = KISS_TX_QUEUE_AIRTIME_BUDGET_MS;
   uint32_t observed_rx_guard_delay_ms = getRemainingObservedRxBiasMs(now_ms);
   uint32_t shared_channel_cooldown_delay_ms = getRemainingSharedChannelCooldownMs(now_ms);
+  uint32_t shared_channel_lease_delay_ms = getRemainingSharedChannelLeaseMs(now_ms);
   uint32_t admission_reference_airtime_ms = _radio.getEstAirtimeFor(KISS_TX_ADMISSION_WINDOW_REFERENCE_BYTES);
   uint32_t admission_window_min_ms =
       getAdaptiveDataAdmissionBackoffMinMs(
@@ -1771,6 +1892,10 @@ void KissModem::handleGetStats() {
   memcpy(buf + 136, &recv_other_error_count, 4);
   memcpy(buf + 140, &shared_channel_cooldown_delay_ms, 4);
   buf[144] = _blind_failure_pressure;
+  memcpy(buf + 145, &shared_channel_lease_delay_ms, 4);
+  memcpy(buf + 149, &_shared_channel_lease_observed_count, 4);
+  memcpy(buf + 153, &_shared_channel_lease_defer_count, 4);
+  memcpy(buf + 157, &_local_channel_reservation_use_count, 4);
   writeHardwareFrame(HW_RESP(HW_CMD_GET_STATS), buf, sizeof(buf));
 }
 
@@ -2229,7 +2354,8 @@ void KissModem::writeCapabilityStatus() {
                            CINDER_FEATURE_ADMISSION_FEEDBACK |
                            CINDER_FEATURE_ADMISSION_RESET |
                            CINDER_FEATURE_ADMISSION_CONFIG |
-                           CINDER_FEATURE_TRAFFIC_CLASS_ADMISSION;
+                           CINDER_FEATURE_TRAFFIC_CLASS_ADMISSION |
+                           CINDER_FEATURE_CHANNEL_RESERVATION;
   uint16_t supported_transports = CINDER_TRANSPORT_LORA | CINDER_TRANSPORT_SERIAL;
   uint16_t max_low_rate_payload_bytes = CINDER_MAX_LOW_RATE_PAYLOAD_BYTES;
   uint16_t max_queue_frames = KISS_TX_QUEUE_CAPACITY;
@@ -2306,6 +2432,8 @@ const char* KissModem::getLastDeferReasonLabel() const {
       return "rx-guard";
     case SCHED_DEFER_NEIGHBOR_BUSY:
       return "nb-busy";
+    case SCHED_DEFER_CHANNEL_RESERVATION:
+      return "resv";
     default:
       return "unknown";
   }

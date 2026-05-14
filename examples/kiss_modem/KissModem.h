@@ -68,6 +68,7 @@
 #define KISS_TX_SHARED_CHANNEL_COOLDOWN_MULTIPLIER 3
 #define KISS_TX_BLIND_FAILURE_COOLDOWN_THRESHOLD 2
 #define KISS_TX_BLIND_FAILURE_PRESSURE_MAX 4
+#define KISS_TX_SHARED_CHANNEL_LEASE_CAP_MS 8000UL
 #define CINDER_NATIVE_HANDLE_LEN 8
 #define KISS_ADMISSION_CONFIG_VERSION_V1 1
 #define KISS_ADMISSION_CONFIG_VERSION 2
@@ -138,7 +139,7 @@
 #define HW_ERR_TX_BACKPRESSURE   0x09
 #define HW_ERR_BUSY              0x0A
 
-#define KISS_FIRMWARE_VERSION 37
+#define KISS_FIRMWARE_VERSION 38
 
 #define SCHED_DEFER_NONE          0x00
 #define SCHED_DEFER_CHANNEL_GUARD 0x01
@@ -151,6 +152,7 @@
 #define SCHED_DEFER_RANDOM_BACKOFF 0x08
 #define SCHED_DEFER_OBSERVED_RX   0x09
 #define SCHED_DEFER_NEIGHBOR_BUSY 0x0A
+#define SCHED_DEFER_CHANNEL_RESERVATION 0x0B
 
 #define CAPABILITY_STATUS_VERSION 1
 #define CINDER_NATIVE_PROTOCOL_VERSION 1
@@ -163,6 +165,7 @@
 #define CINDER_NATIVE_PACKET_ROUTE_REQUEST 0x07
 #define CINDER_NATIVE_PACKET_ROUTE_REPLY 0x08
 #define CINDER_NATIVE_PACKET_CAPABILITY_STATUS 0x09
+#define CINDER_NATIVE_PACKET_CHANNEL_RESERVATION 0x0A
 #define CINDER_TRAFFIC_CLASS_CONTROL     0x01
 #define CINDER_TRAFFIC_CLASS_INTERACTIVE 0x02
 #define CINDER_TRAFFIC_CLASS_TELEMETRY   0x03
@@ -177,6 +180,7 @@
 #define CINDER_FEATURE_ADMISSION_RESET     0x00000800UL
 #define CINDER_FEATURE_ADMISSION_CONFIG    0x00001000UL
 #define CINDER_FEATURE_TRAFFIC_CLASS_ADMISSION 0x00002000UL
+#define CINDER_FEATURE_CHANNEL_RESERVATION 0x00004000UL
 #define CINDER_MAX_LOW_RATE_PAYLOAD_BYTES 192
 
 #define ADMISSION_FEEDBACK_DELIVERED   0x01
@@ -345,6 +349,12 @@ class KissModem {
   bool _has_recv_error_pressure_sample;
   uint32_t _shared_channel_cooldown_until_ms;
   uint8_t _blind_failure_pressure;
+  uint32_t _shared_channel_lease_until_ms;
+  uint32_t _shared_channel_lease_observed_count;
+  uint32_t _shared_channel_lease_defer_count;
+  uint32_t _local_channel_reservation_use_count;
+  uint64_t _local_channel_reservation_message_id;
+  uint32_t _local_channel_reservation_until_ms;
 
   uint8_t _txdelay;
   uint8_t _persistence;
@@ -393,6 +403,8 @@ class KissModem {
   bool headTxIsData() const;
   bool hasQueuedAckFrame(uint8_t first_reorderable) const;
   bool parseNativeDataMessageId(const uint8_t* data, uint16_t len, uint64_t* message_id) const;
+  bool parseNativeChannelReservation(const uint8_t* data, uint16_t len,
+      uint64_t* reservation_id, uint16_t* lease_ms) const;
   bool parseNativeDataDestinationHandle(const uint8_t* data, uint16_t len,
       uint8_t* destination_handle) const;
   bool parseNativeDataSourceHandle(const uint8_t* data, uint16_t len,
@@ -411,8 +423,11 @@ class KissModem {
   void sampleReceiveErrorPressure(uint32_t now_ms);
   void increaseChannelCongestionScore(uint8_t amount);
   void applySharedChannelCooldown(uint32_t now_ms, uint8_t pressure_steps);
+  void applySharedChannelLease(uint32_t now_ms, uint32_t lease_ms);
   void increaseBlindFailurePressure(uint32_t now_ms);
   void decreaseBlindFailurePressure(uint8_t amount);
+  void rememberLocalChannelReservation(uint64_t message_id, uint32_t now_ms, uint32_t lease_ms);
+  bool consumeLocalChannelReservation(uint64_t message_id, uint32_t now_ms);
   uint8_t getFeedbackPressureForPriority(uint8_t priority) const;
   uint8_t getFeedbackPressureMaxForPriority(uint8_t priority) const;
   void increaseFeedbackPressureForPriority(uint8_t priority, uint8_t amount);
@@ -449,6 +464,7 @@ class KissModem {
   uint32_t getRemainingObservedRxBiasMs(uint32_t now_ms) const;
   uint32_t getRemainingObservedRxGuardDelayMs(uint32_t now_ms) const;
   uint32_t getRemainingSharedChannelCooldownMs(uint32_t now_ms) const;
+  uint32_t getRemainingSharedChannelLeaseMs(uint32_t now_ms) const;
   uint8_t getTxAdmissionDelayReason(uint32_t now_ms) const;
   uint32_t getRemainingTxAdmissionDelayMs(uint32_t now_ms) const;
   uint32_t getSchedulerDelayMs(uint32_t now_ms) const;
